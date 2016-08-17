@@ -7,7 +7,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update -q --fix-missing && \
 	apt-get -y install --no-install-recommends \
 	postfix dovecot-core dovecot-imapd dovecot-pop3d dovecot-sieve dovecot-managesieved gamin amavisd-new spamassassin razor pyzor libsasl2-modules \
 	clamav clamav-daemon libnet-dns-perl libmail-spf-perl bzip2 file gzip p7zip unzip arj rsyslog \
-    opendkim opendkim-tools opendmarc curl fail2ban ed iptables && \
+    opendkim opendkim-tools opendmarc curl fail2ban ed iptables git python-m2crypto python-requests && \
 	curl -sk http://neuro.debian.net/lists/trusty.de-m.libre > /etc/apt/sources.list.d/neurodebian.sources.list && \
 	apt-key adv --recv-keys --keyserver hkp://pgp.mit.edu:80 0xA5D32F012649A5A9 && \
 	apt-get update -q --fix-missing && apt-get -y upgrade fail2ban && \
@@ -69,6 +69,19 @@ RUN sed -i -r "/^#?compress/c\compress\ncopytruncate" /etc/logrotate.conf && \
 # Get LetsEncrypt signed certificate
 RUN curl -s https://letsencrypt.org/certs/lets-encrypt-x1-cross-signed.pem > /etc/ssl/certs/lets-encrypt-x1-cross-signed.pem && \
   curl -s https://letsencrypt.org/certs/lets-encrypt-x2-cross-signed.pem > /etc/ssl/certs/lets-encrypt-x2-cross-signed.pem
+
+
+# Configure GPG-Mailgate
+RUN mkdir -p /var/gpgmailgate/.gnupg && mkdir -p /var/gpgmailgate/smime && \
+  mkdir -p /var/gpgmailgate/register_templates && \
+  chown -R nobody:nogroup /var/gpgmailgate && usermod -d /var/gpgmailgate nobody
+
+RUN git clone --depth=1 https://github.com/TheGreatGooo/gpg-mailgate.git /tmp/gpg-mailgate && \
+  mv /tmp/gpg-mailgate/gpg-mailgate.py /tmp/gpg-mailgate/register-handler.py /usr/local/bin/ && \
+  chown nobody:nogroup /usr/local/bin/gpg-mailgate.py && \
+  chown nobody:nogroup /usr/local/bin/register-handler.py && \
+  mv /tmp/gpg-mailgate/GnuPG /usr/local/lib/python2.7/dist-packages && rm -rf /tmp/gpg-mailgate
+ADD target/gpg-mailgate/gpg-mailgate.conf /etc/gpg-mailgate.conf
 
 # Start-mailserver script
 ADD target/bin/generate-ssl-certificate target/bin/generate-dkim-config target/bin/addmailuser target/bin/delmailuser target/start-mailserver.sh /usr/local/bin/

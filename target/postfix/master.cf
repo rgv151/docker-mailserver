@@ -101,3 +101,16 @@ smtp-amavis     unix    -       -       -       -       2       smtp
   -o smtpd_client_connection_rate_limit=0
   -o receive_override_options=no_header_body_checks,no_unknown_recipient_checks
   -o smtp_tls_security_level=none
+
+gpg-mailgate    unix    -   n   n   -   -   pipe
+    flags= user=nobody argv=/usr/local/bin/gpg-mailgate.py ${recipient}
+
+127.0.0.1:10028 inet    n   -   n   -   10  smtpd
+    -o content_filter=smtp-amavis:[127.0.0.1]:10024
+    -o receive_override_options=no_unknown_recipient_checks,no_header_body_checks
+    -o smtpd_helo_restrictions=
+    -o smtpd_client_restrictions=
+    -o smtpd_sender_restrictions=
+    -o smtpd_recipient_restrictions=permit_mynetworks,reject
+    -o mynetworks=127.0.0.0/8
+    -o smtpd_authorized_xforward_hosts=127.0.0.0/8
