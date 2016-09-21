@@ -32,6 +32,10 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update -q --fix-missing && \
     opendmarc \
     p7zip \
     postfix \
+    postgrey \
+    python-m2crypto \
+    python-markdown \
+    python-requests \
     pyzor \
     razor \
     rsyslog \
@@ -114,11 +118,11 @@ RUN git clone --depth=1 https://github.com/TheGreatGooo/gpg-mailgate.git /tmp/gp
   chown nobody:nogroup /usr/local/bin/gpg-mailgate.py && \
   chown nobody:nogroup /usr/local/bin/register-handler.py && \
   mv /tmp/gpg-mailgate/GnuPG /usr/local/lib/python2.7/dist-packages && rm -rf /tmp/gpg-mailgate
-ADD target/gpg-mailgate/gpg-mailgate.conf /etc/gpg-mailgate.conf
+COPY target/gpg-mailgate/gpg-mailgate.conf /etc/gpg-mailgate.conf
 RUN echo 'register: |/usr/local/bin/register-handler.py' >> /etc/aliases && postalias /etc/aliases
 
 # Configure postgrey
-ADD target/postgrey/postgrey /etc/default/postgrey
+COPY target/postgrey/postgrey /etc/default/postgrey
 
 COPY ./target/bin /usr/local/bin
 # Start-mailserver script
