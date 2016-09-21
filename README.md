@@ -16,6 +16,7 @@ Includes:
 - opendkim
 - opendmarc
 - fail2ban
+- fetchmail
 - basic [sieve support](https://github.com/tomav/docker-mailserver/wiki/Configure-Sieve-filters) using dovecot
 - [LetsEncrypt](https://letsencrypt.org/) and self-signed certificates
 - [integration tests](https://travis-ci.org/tomav/docker-mailserver)
@@ -28,53 +29,56 @@ Before you open an issue, please have a look this `README`, the [Wiki](https://g
 ## Usage
 
 #### Get latest image
- 
+
     docker pull tvial/docker-mailserver:latest
 
 #### Create a `docker-compose.yml`
 
-Adapt this file with your FQDN.
+Adapt this file with your FQDN. Install [docker-compose](https://docs.docker.com/compose/) in the version `1.6` or higher.
 
-    version: '2'
+```yaml	
+version: '2'
 
-    services:
-      mail:
-        image: tvial/docker-mailserver:latest
-        # build: .
-        hostname: mail
-        domainname: domain.com
-        container_name: mail
-        ports:
-        - "25:25"
-        - "143:143"
-        - "587:587"
-        - "993:993"
-        volumes:
-        - maildata:/var/mail
-        - ./config/:/tmp/docker-mailserver/
-
+services:
+  mail:
+    image: tvial/docker-mailserver:latest
+    # build: .
+    hostname: mail
+    domainname: domain.com
+    container_name: mail
+    ports:
+      - "25:25"
+      - "143:143"
+      - "587:587"
+      - "993:993"
     volumes:
-      maildata:
-        driver: local
+      - maildata:/var/mail
+      - ./config/:/tmp/docker-mailserver/
+
+volumes:
+  maildata:
+    driver: local
+```
 
 #### Create your mail accounts
 
 Don't forget to adapt MAIL_USER and MAIL_PASS to your needs
 
     mkdir -p config
+    touch config/postfix-accounts.cf
     docker run --rm \
       -e MAIL_USER=user1@domain.tld \
       -e MAIL_PASS=mypassword \
       -ti tvial/docker-mailserver:latest \
       /bin/sh -c 'echo "$MAIL_USER|$(doveadm pw -s SHA512-CRYPT -u $MAIL_USER -p $MAIL_PASS)"' >> config/postfix-accounts.cf
 
-#### Generate DKIM keys 
+#### Generate DKIM keys
 
     docker run --rm \
       -v "$(pwd)/config":/tmp/docker-mailserver \
       -ti tvial/docker-mailserver:latest generate-dkim-config
 
-Now the keys are generated, you can configure your DNS server by just pasting the content of `config/opedkim/keys/domain.tld/mail.txt` in your `domain.tld.hosts` zone.
+Now the keys are generated, you can configure your DNS server by just pasting the content of `config/opendkim/keys/domain.tld/mail.txt` in your `domain.tld.hosts` zone.
 
 #### Start the container
 
@@ -110,6 +114,10 @@ Otherwise, `iptables` won't be able to ban IPs.
   - **empty** => Managesieve service disabled
   - 1 => Enables Managesieve on port 4190
 
+##### ENABLE_FETCHMAIL
+  - **empty** => `fetchmail` disabled
+  - 1 => `fetchmail` enabled
+
 ##### SA_TAG
 
   - **2.0** => add spam info headers if at, or above that level
@@ -137,8 +145,14 @@ Otherwise, `iptables` won't be able to ban IPs.
   - **empty** => SSL disabled
   - letsencrypt => Enables Let's Encrypt certificates
   - custom => Enables custom certificates
+  - manual => Let's you manually specify locations of your SSL certificates for non-standard cases
   - self-signed => Enables self-signed certificates
 
 Please read [the SSL page in the wiki](https://github.com/tomav/docker-mailserver/wiki/Configure-SSL) for more information.
 
+##### PERMIT_DOCKER
 
+Set different options for mynetworks option (can be overwrite in postfix-main.cf)
+  - **empty** => localhost only
+  - host => Add docker host (ipv4 only)
+  - network => Add all docker containers (ipv4 only)

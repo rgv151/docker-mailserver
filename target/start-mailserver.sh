@@ -125,23 +125,27 @@ case $SSL_TYPE in
   "letsencrypt" )
     # letsencrypt folders and files mounted in /etc/letsencrypt
     if [ -e "/etc/letsencrypt/live/$(hostname)/cert.pem" ] \
-    && [ -e "/etc/letsencrypt/live/$(hostname)/chain.pem" ] \
-    && [ -e "/etc/letsencrypt/live/$(hostname)/fullchain.pem" ] \
-    && [ -e "/etc/letsencrypt/live/$(hostname)/privkey.pem" ]; then
-      echo "Adding $(hostname) SSL certificate"
-      # create combined.pem from (cert|chain|privkey).pem with eol after each .pem
-      sed -e '$a\' -s /etc/letsencrypt/live/$(hostname)/{cert,chain,privkey}.pem > /etc/letsencrypt/live/$(hostname)/combined.pem
+    && [ -e "/etc/letsencrypt/live/$(hostname)/fullchain.pem" ]; then
+      KEY=""
+      if [ -e "/etc/letsencrypt/live/$(hostname)/privkey.pem" ]; then
+        KEY="privkey"
+      elif [ -e "/etc/letsencrypt/live/$(hostname)/key.pem" ]; then
+        KEY="key"
+      fi
+      if [ -n "$KEY" ]; then
+        echo "Adding $(hostname) SSL certificate"
 
-      # Postfix configuration
-      sed -i -r 's/smtpd_tls_cert_file=\/etc\/ssl\/certs\/ssl-cert-snakeoil.pem/smtpd_tls_cert_file=\/etc\/letsencrypt\/live\/'$(hostname)'\/fullchain.pem/g' /etc/postfix/main.cf
-      sed -i -r 's/smtpd_tls_key_file=\/etc\/ssl\/private\/ssl-cert-snakeoil.key/smtpd_tls_key_file=\/etc\/letsencrypt\/live\/'$(hostname)'\/privkey.pem/g' /etc/postfix/main.cf
+        # Postfix configuration
+        sed -i -r 's~smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem~smtpd_tls_cert_file=/etc/letsencrypt/live/'$(hostname)'/fullchain.pem~g' /etc/postfix/main.cf
+        sed -i -r 's~smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key~smtpd_tls_key_file=/etc/letsencrypt/live/'$(hostname)'/'"$KEY"'\.pem~g' /etc/postfix/main.cf
 
-      # Dovecot configuration
-      sed -i -e 's/ssl_cert = <\/etc\/dovecot\/dovecot\.pem/ssl_cert = <\/etc\/letsencrypt\/live\/'$(hostname)'\/fullchain\.pem/g' /etc/dovecot/conf.d/10-ssl.conf
-      sed -i -e 's/ssl_key = <\/etc\/dovecot\/private\/dovecot\.pem/ssl_key = <\/etc\/letsencrypt\/live\/'$(hostname)'\/privkey\.pem/g' /etc/dovecot/conf.d/10-ssl.conf
+        # Dovecot configuration
+        sed -i -e 's~ssl_cert = </etc/dovecot/dovecot\.pem~ssl_cert = </etc/letsencrypt/live/'$(hostname)'/fullchain\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
+        sed -i -e 's~ssl_key = </etc/dovecot/private/dovecot\.pem~ssl_key = </etc/letsencrypt/live/'$(hostname)'/'"$KEY"'\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
 
-      echo "SSL configured with 'letsencrypt' certificates"
+        echo "SSL configured with 'letsencrypt' certificates"
 
+      fi
     fi
     ;;
 
@@ -153,14 +157,38 @@ case $SSL_TYPE in
       cp "/tmp/docker-mailserver/ssl/$(hostname)-full.pem" /etc/postfix/ssl
 
       # Postfix configuration
-      sed -i -r 's/smtpd_tls_cert_file=\/etc\/ssl\/certs\/ssl-cert-snakeoil.pem/smtpd_tls_cert_file=\/etc\/postfix\/ssl\/'$(hostname)'-full.pem/g' /etc/postfix/main.cf
-      sed -i -r 's/smtpd_tls_key_file=\/etc\/ssl\/private\/ssl-cert-snakeoil.key/smtpd_tls_key_file=\/etc\/postfix\/ssl\/'$(hostname)'-full.pem/g' /etc/postfix/main.cf
+      sed -i -r 's~smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem~smtpd_tls_cert_file=/etc/postfix/ssl/'$(hostname)'-full.pem~g' /etc/postfix/main.cf
+      sed -i -r 's~smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key~smtpd_tls_key_file=/etc/postfix/ssl/'$(hostname)'-full.pem~g' /etc/postfix/main.cf
 
       # Dovecot configuration
-      sed -i -e 's/ssl_cert = <\/etc\/dovecot\/dovecot\.pem/ssl_cert = <\/etc\/postfix\/ssl\/'$(hostname)'-full\.pem/g' /etc/dovecot/conf.d/10-ssl.conf
-      sed -i -e 's/ssl_key = <\/etc\/dovecot\/private\/dovecot\.pem/ssl_key = <\/etc\/postfix\/ssl\/'$(hostname)'-full\.pem/g' /etc/dovecot/conf.d/10-ssl.conf
+      sed -i -e 's~ssl_cert = </etc/dovecot/dovecot\.pem~ssl_cert = </etc/postfix/ssl/'$(hostname)'-full\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
+      sed -i -e 's~ssl_key = </etc/dovecot/private/dovecot\.pem~ssl_key = </etc/postfix/ssl/'$(hostname)'-full\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
 
       echo "SSL configured with 'CA signed/custom' certificates"
+
+    fi
+    ;;
+
+  "manual" )
+    # Lets you manually specify the location of the SSL Certs to use. This gives you some more control over this whole processes (like using kube-lego to generate certs)
+    if [ -n "$SSL_CERT_PATH" ] \
+    && [ -n "$SSL_KEY_PATH" ]; then
+      echo "Configuring certificates using cert $SSL_CERT_PATH and key $SSL_KEY_PATH"
+      mkdir -p /etc/postfix/ssl
+      cp "$SSL_CERT_PATH" /etc/postfix/ssl/cert
+      cp "$SSL_KEY_PATH" /etc/postfix/ssl/key
+      chmod 600 /etc/postfix/ssl/cert
+      chmod 600 /etc/postfix/ssl/key
+
+      # Postfix configuration
+      sed -i -r 's~smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem~smtpd_tls_cert_file=/etc/postfix/ssl/cert~g' /etc/postfix/main.cf
+      sed -i -r 's~smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key~smtpd_tls_key_file=/etc/postfix/ssl/key~g' /etc/postfix/main.cf
+
+      # Dovecot configuration
+      sed -i -e 's~ssl_cert = </etc/dovecot/dovecot\.pem~ssl_cert = </etc/postfix/ssl/cert~g' /etc/dovecot/conf.d/10-ssl.conf
+      sed -i -e 's~ssl_key = </etc/dovecot/private/dovecot\.pem~ssl_key = </etc/postfix/ssl/key~g' /etc/dovecot/conf.d/10-ssl.conf
+
+      echo "SSL configured with 'Manual' certificates"
 
     fi
     ;;
@@ -181,15 +209,15 @@ case $SSL_TYPE in
       cp /tmp/docker-mailserver/ssl/demoCA/cacert.pem /etc/postfix/ssl
 
       # Postfix configuration
-      sed -i -r 's/smtpd_tls_cert_file=\/etc\/ssl\/certs\/ssl-cert-snakeoil.pem/smtpd_tls_cert_file=\/etc\/postfix\/ssl\/'$(hostname)'-cert.pem/g' /etc/postfix/main.cf
-      sed -i -r 's/smtpd_tls_key_file=\/etc\/ssl\/private\/ssl-cert-snakeoil.key/smtpd_tls_key_file=\/etc\/postfix\/ssl\/'$(hostname)'-key.pem/g' /etc/postfix/main.cf
-      sed -i -r 's/#smtpd_tls_CAfile=/smtpd_tls_CAfile=\/etc\/postfix\/ssl\/cacert.pem/g' /etc/postfix/main.cf
-      sed -i -r 's/#smtp_tls_CAfile=/smtp_tls_CAfile=\/etc\/postfix\/ssl\/cacert.pem/g' /etc/postfix/main.cf
+      sed -i -r 's~smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem~smtpd_tls_cert_file=/etc/postfix/ssl/'$(hostname)'-cert.pem~g' /etc/postfix/main.cf
+      sed -i -r 's~smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key~smtpd_tls_key_file=/etc/postfix/ssl/'$(hostname)'-key.pem~g' /etc/postfix/main.cf
+      sed -i -r 's~#smtpd_tls_CAfile=~smtpd_tls_CAfile=/etc/postfix/ssl/cacert.pem~g' /etc/postfix/main.cf
+      sed -i -r 's~#smtp_tls_CAfile=~smtp_tls_CAfile=/etc/postfix/ssl/cacert.pem~g' /etc/postfix/main.cf
       ln -s /etc/postfix/ssl/cacert.pem "/etc/ssl/certs/cacert-$(hostname).pem"
 
       # Dovecot configuration
-      sed -i -e 's/ssl_cert = <\/etc\/dovecot\/dovecot\.pem/ssl_cert = <\/etc\/postfix\/ssl\/'$(hostname)'-combined\.pem/g' /etc/dovecot/conf.d/10-ssl.conf
-      sed -i -e 's/ssl_key = <\/etc\/dovecot\/private\/dovecot\.pem/ssl_key = <\/etc\/postfix\/ssl\/'$(hostname)'-key\.pem/g' /etc/dovecot/conf.d/10-ssl.conf
+      sed -i -e 's~ssl_cert = </etc/dovecot/dovecot\.pem~ssl_cert = </etc/postfix/ssl/'$(hostname)'-combined\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
+      sed -i -e 's~ssl_key = </etc/dovecot/private/dovecot\.pem~ssl_key = </etc/postfix/ssl/'$(hostname)'-key\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
 
       echo "SSL configured with 'self-signed' certificates"
 
@@ -205,6 +233,33 @@ fi
 echo "Postfix configurations"
 touch /etc/postfix/vmailbox && postmap /etc/postfix/vmailbox
 touch /etc/postfix/virtual && postmap /etc/postfix/virtual
+
+# PERMIT_DOCKER Option
+container_ip=$(ip addr show eth0 | grep 'inet ' | sed 's/[^0-9\.\/]*//g' | cut -d '/' -f 1)
+container_network="$(echo $container_ip | cut -d '.' -f1-2).0.0"
+case $PERMIT_DOCKER in
+  "host" )
+      echo "Adding $container_network/16 to my networks"
+      postconf -e "$(postconf | grep '^mynetworks =') $container_network/16"
+      bash -c "echo $container_network/16 >> /etc/opendmarc/ignore.hosts"
+      bash -c "echo $container_network/16 >> /etc/opendkim/TrustedHosts"
+    ;;
+
+  "network" )
+      echo "Adding docker network in my networks"
+      postconf -e "$(postconf | grep '^mynetworks =') 172.16.0.0/12"
+      bash -c "echo 172.16.0.0/12 >> /etc/opendmarc/ignore.hosts"
+      bash -c "echo 172.16.0.0/12 >> /etc/opendkim/TrustedHosts"
+    ;;
+
+  * )
+      echo "Adding container ip in my networks"
+      postconf -e "$(postconf | grep '^mynetworks =') $container_ip/32"
+      bash -c "echo $container_ip/32 >> /etc/opendmarc/ignore.hosts"
+      bash -c "echo $container_ip/32 >> /etc/opendkim/TrustedHosts"
+    ;;
+
+esac
 
 #
 # Override Postfix configuration
@@ -226,10 +281,13 @@ fi
 
 # Support outgoing email relay via Amazon SES
 if [ ! -z "$AWS_SES_HOST" -a ! -z "$AWS_SES_USERPASS" ]; then
-  echo "Setting up outgoing email via AWS SES host $AWS_SES_HOST"
-  echo "[$AWS_SES_HOST]:25 $AWS_SES_USERPASS" >>/etc/postfix/sasl_passwd
+  if [ -z "$AWS_SES_PORT" ];then
+    AWS_SES_PORT=25
+  fi
+  echo "Setting up outgoing email via AWS SES host $AWS_SES_HOST:$AWS_SES_PORT"
+  echo "[$AWS_SES_HOST]:$AWS_SES_PORT $AWS_SES_USERPASS" >>/etc/postfix/sasl_passwd
   postconf -e \
-    "relayhost = [$AWS_SES_HOST]:25" \
+    "relayhost = [$AWS_SES_HOST]:$AWS_SES_PORT" \
     "smtp_sasl_auth_enable = yes" \
     "smtp_sasl_security_options = noanonymous" \
     "smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd" \
@@ -276,7 +334,7 @@ else
 fi
 
 # Fix cron.daily for spamassassin
-sed -i -e 's/invoke-rc.d spamassassin reload/\/etc\/init\.d\/spamassassin reload/g' /etc/cron.daily/spamassassin
+sed -i -e 's~invoke-rc.d spamassassin reload~/etc/init\.d/spamassassin reload~g' /etc/cron.daily/spamassassin
 
 # Consolidate all state that should be persisted across container restarts into one mounted
 # directory
@@ -325,17 +383,28 @@ if [ "$ENABLE_POP3" = 1 -a "$SMTP_ONLY" != 1 ]; then
 fi
 
 if [ -f /tmp/docker-mailserver/dovecot.cf ]; then
+  echo 'Adding file "dovecot.cf" to the Dovecot configuration'
   cp /tmp/docker-mailserver/dovecot.cf /etc/dovecot/local.conf
   /usr/sbin/dovecot reload
 fi
 
-# Start services related to SMTP
-if ! [ "$DISABLE_SPAMASSASSIN" = 1 ]; then
-  /etc/init.d/spamassassin start
+# Enable fetchmail daemon
+if [ "$ENABLE_FETCHMAIL" = 1 ]; then
+  /usr/local/bin/setup-fetchmail
+  echo "Fetchmail enabled"
+  /etc/init.d/fetchmail start
 fi
+
+# Start services related to SMTP
 if ! [ "$DISABLE_CLAMAV" = 1 ]; then
   /etc/init.d/clamav-daemon start
 fi
+
+# Copy user provided configuration files if provided
+if [ -f /tmp/docker-mailserver/amavis.cf ]; then
+  cp /tmp/docker-mailserver/amavis.cf /etc/amavis/conf.d/50-user
+fi
+
 if ! [ "$DISABLE_AMAVIS" = 1 ]; then
   /etc/init.d/amavis start
 fi

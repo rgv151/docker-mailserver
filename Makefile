@@ -13,7 +13,7 @@ build:
 generate-accounts:
 	docker run --rm -e MAIL_USER=user1@localhost.localdomain -e MAIL_PASS=mypassword -t $(NAME) /bin/sh -c 'echo "$$MAIL_USER|$$(doveadm pw -s SHA512-CRYPT -u $$MAIL_USER -p $$MAIL_PASS)"' > test/config/postfix-accounts.cf
 	docker run --rm -e MAIL_USER=user2@otherdomain.tld -e MAIL_PASS=mypassword -t $(NAME) /bin/sh -c 'echo "$$MAIL_USER|$$(doveadm pw -s SHA512-CRYPT -u $$MAIL_USER -p $$MAIL_PASS)"' >> test/config/postfix-accounts.cf
-	
+
 run:
 	# Run containers
 	docker run -d --name mail \
@@ -26,6 +26,7 @@ run:
 		-e SASL_PASSWD="external-domain.com username:password" \
 		-e ENABLE_MANAGESIEVE=1 \
 		-e ONE_DIR=1 \
+		-e PERMIT_DOCKER=host\
 		-h mail.my-domain.com -t $(NAME)
 	sleep 20
 	docker run -d --name mail_pop3 \
@@ -40,6 +41,7 @@ run:
 		-v "`pwd`/test/config":/tmp/docker-mailserver \
 		-v "`pwd`/test":/tmp/docker-mailserver-test \
 		-e SMTP_ONLY=1 \
+		-e PERMIT_DOCKER=network\
 		-h mail.my-domain.com -t $(NAME)
 	sleep 20
 	docker run -d --name mail_fail2ban \
@@ -49,16 +51,17 @@ run:
 		--cap-add=NET_ADMIN \
 		-h mail.my-domain.com -t $(NAME)
 	sleep 20
+	docker run -d --name mail_fetchmail \
+		-v "`pwd`/test/config":/tmp/docker-mailserver \
+		-v "`pwd`/test":/tmp/docker-mailserver-test \
+		-e ENABLE_FETCHMAIL=1 \
+		--cap-add=NET_ADMIN \
+		-h mail.my-domain.com -t $(NAME)
+	sleep 20
 	docker run -d --name mail_disabled_amavis \
 		-v "`pwd`/test/config":/tmp/docker-mailserver \
 		-v "`pwd`/test":/tmp/docker-mailserver-test \
 		-e DISABLE_AMAVIS=1 \
-		-h mail.my-domain.com -t $(NAME)
-	sleep 20
-	docker run -d --name mail_disabled_spamassassin \
-		-v "`pwd`/test/config":/tmp/docker-mailserver \
-		-v "`pwd`/test":/tmp/docker-mailserver-test \
-		-e DISABLE_SPAMASSASSIN=1 \
 		-h mail.my-domain.com -t $(NAME)
 	sleep 20
 	docker run -d --name mail_disabled_clamav \
@@ -66,10 +69,18 @@ run:
 		-v "`pwd`/test":/tmp/docker-mailserver-test \
 		-e DISABLE_CLAMAV=1 \
 		-h mail.my-domain.com -t $(NAME)
+	docker run -d --name mail_manual_ssl \
+		-v "`pwd`/test/config":/tmp/docker-mailserver \
+		-v "`pwd`/test":/tmp/docker-mailserver-test \
+		-e SSL_TYPE=manual \
+		-e SSL_CERT_PATH=/tmp/docker-mailserver/letsencrypt/mail.my-domain.com/fullchain.pem \
+		-e SSL_KEY_PATH=/tmp/docker-mailserver/letsencrypt/mail.my-domain.com/privkey.pem \
+		-h mail.my-domain.com -t $(NAME)
 	# Wait for containers to fully start
 	sleep 20
 
 fixtures:
+	cp config/postfix-accounts.cf config/postfix-accounts.cf.bak
 	# Setup sieve & create filtering folder (INBOX/spam)
 	docker cp "`pwd`/test/config/sieve/dovecot.sieve" mail:/var/mail/localhost.localdomain/user1/.dovecot.sieve
 	docker exec mail /bin/sh -c "maildirmake.dovecot /var/mail/localhost.localdomain/user1/.INBOX.spam"
@@ -95,4 +106,21 @@ tests:
 
 clean:
 	# Remove running test containers
-	docker rm -f mail mail_pop3 mail_smtponly mail_fail2ban fail-auth-mailer mail_disabled_amavis mail_disabled_spamassassin mail_disabled_clamav
+	-docker rm -f \
+		mail \
+		mail_pop3 \
+		mail_smtponly \
+		mail_fail2ban \
+		mail_fetchmail \
+		fail-auth-mailer \
+		mail_disabled_amavis \
+		mail_disabled_clamav \
+		mail_manual_ssl
+	@if [ -f config/postfix-accounts.cf.bak ]; then\
+		rm -f config/postfix-accounts.cf ;\
+		mv config/postfix-accounts.cf.bak config/postfix-accounts.cf ;\
+	fi
+	-rm -rf test/onedir \
+		test/config/empty \
+		test/config/without-accounts \
+		test/config/without-virtual
