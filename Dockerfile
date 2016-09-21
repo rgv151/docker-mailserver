@@ -21,6 +21,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update -q --fix-missing && \
     fetchmail \
     file \
     gamin \
+    git \
     gzip \
     iptables \
     libmail-spf-perl \
