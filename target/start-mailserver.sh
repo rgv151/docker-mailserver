@@ -337,6 +337,7 @@ if ! [ "$DISABLE_AMAVIS" = 1 ]; then
 fi
 /etc/init.d/opendkim start
 /etc/init.d/opendmarc start
+/etc/init.d/postgrey start
 /etc/init.d/postfix start
 
 if [ "$ENABLE_FAIL2BAN" = 1 ]; then
