@@ -29,6 +29,10 @@ if [ -f /tmp/docker-mailserver/postfix-accounts.cf ]; then
   sed -i -e 's/#port = 995/port = 995/g' /etc/dovecot/conf.d/10-master.conf
   sed -i -e 's/#ssl = yes/ssl = required/g' /etc/dovecot/conf.d/10-ssl.conf
 
+  # Configure gpg-mailgate
+  domainname=$(hostname -d)
+  sed -i -e "s/register_email = register@yourdomain\.tld/register_email = register@$domainname/" /etc/gpg-mailgate.conf
+
   # Creating users
   # 'pass' is encrypted
   while IFS=$'|' read login pass

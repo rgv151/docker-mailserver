@@ -82,7 +82,7 @@ smtp-amavis     unix    -       -       -       -       2       smtp
   -o smtp_tls_security_level=none
 
 127.0.0.1:10025 inet    n       -       n       -       -       smtpd
-  -o content_filter=
+  -o content_filter=gpg-mailgate
   -o local_recipient_maps=
   -o relay_recipient_maps=
   -o smtpd_restriction_classes=
@@ -103,10 +103,10 @@ smtp-amavis     unix    -       -       -       -       2       smtp
   -o smtp_tls_security_level=none
 
 gpg-mailgate    unix    -   n   n   -   -   pipe
-    flags= user=nobody argv=/usr/local/bin/gpg-mailgate.py ${recipient}
+    flags= user=nobody argv=/usr/local/bin/gpg-mailgate.py ${original_recipient}
 
 127.0.0.1:10028 inet    n   -   n   -   10  smtpd
-    -o content_filter=smtp-amavis:[127.0.0.1]:10024
+    -o content_filter=
     -o receive_override_options=no_unknown_recipient_checks,no_header_body_checks
     -o smtpd_helo_restrictions=
     -o smtpd_client_restrictions=
