@@ -5,6 +5,10 @@ die () {
   exit 1
 }
 
+if [ "$DOMAIN_NAME" = "" ]; then
+    DOMAIN_NAME = "${hostname}"
+fi
+
 #
 # Users
 #
@@ -28,10 +32,11 @@ if [ -f /tmp/docker-mailserver/postfix-accounts.cf ]; then
   sed -i -e 's/#port = 993/port = 993/g' /etc/dovecot/conf.d/10-master.conf
   sed -i -e 's/#port = 995/port = 995/g' /etc/dovecot/conf.d/10-master.conf
   sed -i -e 's/#ssl = yes/ssl = required/g' /etc/dovecot/conf.d/10-ssl.conf
+  echo "postmaster_address=postmaster at ${DOMAIN_NAME}" >> /etc/dovecot/dovecot.conf
 
   # Configure gpg-mailgate
-  domainname=$(hostname -d)
-  sed -i -e "s/register_email = register@yourdomain\.tld/register_email = register@$domainname/" /etc/gpg-mailgate.conf
+  sed -i -e "s/mydestination =/mydestination = $(hostname)/" /etc/postfix/main.cf
+  sed -i -e "s/register_email = register@yourdomain\.tld/register_email = register@${DOMAIN_NAME}/" /etc/gpg-mailgate.conf
 
   # Creating users
   # 'pass' is encrypted
@@ -232,7 +237,7 @@ fi
 
 echo "Postfix configurations"
 touch /etc/postfix/vmailbox && postmap /etc/postfix/vmailbox
-touch /etc/postfix/virtual && postmap /etc/postfix/virtual
+echo "register@${DOMAIN_NAME} register" >> /etc/postfix/virtual && postmap /etc/postfix/virtual
 
 # PERMIT_DOCKER Option
 container_ip=$(ip addr show eth0 | grep 'inet ' | sed 's/[^0-9\.\/]*//g' | cut -d '/' -f 1)

@@ -109,17 +109,18 @@ RUN curl -s https://letsencrypt.org/certs/lets-encrypt-x1-cross-signed.pem > /et
   curl -s https://letsencrypt.org/certs/lets-encrypt-x2-cross-signed.pem > /etc/ssl/certs/lets-encrypt-x2-cross-signed.pem
 
 # Configure GPG-Mailgate
-RUN mkdir -p /var/gpgmailgate/.gnupg && mkdir -p /var/gpgmailgate/smime && \
-  mkdir -p /var/gpgmailgate/register_templates && \
-  chown -R nobody:nogroup /var/gpgmailgate && usermod -d /var/gpgmailgate nobody
+RUN mkdir -p /var/gpgmailgate/.gnupg && mkdir -p /var/gpgmailgate/smime && usermod -d /var/gpgmailgate nobody
 
-RUN git clone --depth=1 https://github.com/TheGreatGooo/gpg-mailgate.git /tmp/gpg-mailgate && \
+RUN git clone --depth=1 https://github.com/rgv151/gpg-mailgate.git /tmp/gpg-mailgate && \
   mv /tmp/gpg-mailgate/gpg-mailgate.py /tmp/gpg-mailgate/register-handler.py /usr/local/bin/ && \
+  mv /tmp/gpg-mailgate/cron_templates /var/gpgmailgate/ && \
+  mv /tmp/gpg-mailgate/register_templates /var/gpgmailgate/ && \
+  chown -R nobody:nogroup /var/gpgmailgate && \
   chown nobody:nogroup /usr/local/bin/gpg-mailgate.py && \
   chown nobody:nogroup /usr/local/bin/register-handler.py && \
   mv /tmp/gpg-mailgate/GnuPG /usr/local/lib/python2.7/dist-packages && rm -rf /tmp/gpg-mailgate
 COPY target/gpg-mailgate/gpg-mailgate.conf /etc/gpg-mailgate.conf
-RUN echo 'register: |/usr/local/bin/register-handler.py' >> /etc/aliases && postalias /etc/aliases
+RUN echo 'register: "|/usr/local/bin/register-handler.py"' >> /etc/aliases && newaliases
 
 # Configure postgrey
 COPY target/postgrey/postgrey /etc/default/postgrey
