@@ -113,7 +113,6 @@ RUN mkdir -p /var/gpgmailgate/.gnupg && mkdir -p /var/gpgmailgate/smime && userm
 
 RUN git clone --depth=1 https://github.com/rgv151/gpg-mailgate.git /tmp/gpg-mailgate && \
   mv /tmp/gpg-mailgate/gpg-mailgate.py /tmp/gpg-mailgate/register-handler.py /usr/local/bin/ && \
-  mv /tmp/gpg-mailgate/cron_templates /var/gpgmailgate/ && \
   mv /tmp/gpg-mailgate/register_templates /var/gpgmailgate/ && \
   chown -R nobody:nogroup /var/gpgmailgate && \
   chown nobody:nogroup /usr/local/bin/gpg-mailgate.py && \
