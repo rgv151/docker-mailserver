@@ -1,9 +1,17 @@
 #!/bin/bash
 
 die () {
-  echo >&2 "$@"
+  echo "## Configuration error:"
+  echo >&2 "> $@"
   exit 1
 }
+
+#
+# Check that hostname/domainname is provided (no default docker hostname)
+#
+if ( ! echo $(hostname) | grep -E '^(\S+[.]\S+)$' ); then
+  die "Setting hostname/domainname is required."
+fi
 
 if [ "$DOMAIN_NAME" = "" ]; then
     DOMAIN_NAME = "${hostname}"
@@ -16,20 +24,9 @@ fi
 echo "export VIRUSMAILS_DELETE_DELAY=${VIRUSMAILS_DELETE_DELAY:="7"}" >> /root/.bashrc
 
 #
-# Users
+# Configuring Dovecot
 #
-if [ -f /tmp/docker-mailserver/postfix-accounts.cf ]; then
-  echo "Checking file line endings"
-  sed -i 's/\r//g' /tmp/docker-mailserver/postfix-accounts.cf
-  echo "Regenerating postfix 'vmailbox' and 'virtual' for given users"
-  echo "# WARNING: this file is auto-generated. Modify config/postfix-accounts.cf to edit user list." > /etc/postfix/vmailbox
-
-  # Checking that /tmp/docker-mailserver/postfix-accounts.cf ends with a newline
-  sed -i -e '$a\' /tmp/docker-mailserver/postfix-accounts.cf
-  # Configuring Dovecot
-  echo -n > /etc/dovecot/userdb
-  chown dovecot:dovecot /etc/dovecot/userdb
-  chmod 640 /etc/dovecot/userdb
+if [ "$SMTP_ONLY" != 1 ]; then
   cp -a /usr/share/dovecot/protocols.d /etc/dovecot/
   # Disable pop3 (it will be eventually enabled later in the script, if requested)
   mv /etc/dovecot/protocols.d/pop3d.protocol /etc/dovecot/protocols.d/pop3d.protocol.disab
@@ -38,7 +35,26 @@ if [ -f /tmp/docker-mailserver/postfix-accounts.cf ]; then
   sed -i -e 's/#port = 993/port = 993/g' /etc/dovecot/conf.d/10-master.conf
   sed -i -e 's/#port = 995/port = 995/g' /etc/dovecot/conf.d/10-master.conf
   sed -i -e 's/#ssl = yes/ssl = required/g' /etc/dovecot/conf.d/10-ssl.conf
-  echo "postmaster_address=postmaster at ${DOMAIN_NAME}" >> /etc/dovecot/dovecot.conf
+fi
+
+#
+# Users
+#
+if [ -f /tmp/docker-mailserver/postfix-accounts.cf -a "$ENABLE_LDAP" != 1 ]; then
+  echo "Checking file line endings"
+  sed -i 's/\r//g' /tmp/docker-mailserver/postfix-accounts.cf
+  echo "Regenerating postfix 'vmailbox' and 'virtual' for given users"
+  echo "# WARNING: this file is auto-generated. Modify config/postfix-accounts.cf to edit user list." > /etc/postfix/vmailbox
+
+  # Checking that /tmp/docker-mailserver/postfix-accounts.cf ends with a newline
+  sed -i -e '$a\' /tmp/docker-mailserver/postfix-accounts.cf
+
+  echo -n > /etc/dovecot/userdb
+  chown dovecot:dovecot /etc/dovecot/userdb
+  chmod 640 /etc/dovecot/userdb
+
+  sed -i -e '/\!include auth-ldap\.conf\.ext/s/^/#/' /etc/dovecot/conf.d/10-auth.conf
+  sed -i -e '/\!include auth-passwdfile\.inc/s/^#//' /etc/dovecot/conf.d/10-auth.conf
 
   # Configure gpg-mailgate
   sed -i -e "s/mydestination =/mydestination = $(hostname)/" /etc/postfix/main.cf
@@ -74,6 +90,93 @@ if [ -f /tmp/docker-mailserver/postfix-accounts.cf ]; then
   done < /tmp/docker-mailserver/postfix-accounts.cf
 else
   echo "==> Warning: 'config/docker-mailserver/postfix-accounts.cf' is not provided. No mail account created."
+fi
+
+#
+# LDAP
+#
+if [ "$ENABLE_LDAP" = 1 ]; then
+  for i in 'users' 'groups' 'aliases'; do
+    fpath="/tmp/docker-mailserver/postfix-ldap-${i}.cf"
+    if [ -f $fpath ]; then
+      cp ${fpath} /etc/postfix/ldap-${i}.cf
+      sed -i -e 's|^server_host.*|server_host = '${LDAP_SERVER_HOST:="mail.domain.com"}'|g' \
+             -e 's|^search_base.*|search_base = '${LDAP_SEARCH_BASE:="ou=people,dc=domain,dc=com"}'|g' \
+             -e 's|^bind_dn.*|bind_dn = '${LDAP_BIND_DN:="cn=admin,dc=domain,dc=com"}'|g' \
+             -e 's|^bind_pw.*|bind_pw = '${LDAP_BIND_PW:="admin"}'|g' \
+             /etc/postfix/ldap-${i}.cf
+    else
+      echo "${fpath} not found"
+      echo "==> Warning: 'config/postfix-ldap-$i.cf' is not provided."
+    fi
+  done
+
+  echo "Loading dovecot LDAP authentification configuration"
+  cp /tmp/docker-mailserver/dovecot-ldap.conf.ext /etc/dovecot/dovecot-ldap.conf.ext
+
+  sed -i -e 's|^hosts.*|hosts = '${LDAP_SERVER_HOST:="mail.domain.com"}'|g' \
+          -e 's|^base.*|base = '${LDAP_SEARCH_BASE:="ou=people,dc=domain,dc=com"}'|g' \
+          -e 's|^dn\s*=.*|dn = '${LDAP_BIND_DN:="cn=admin,dc=domain,dc=com"}'|g' \
+          -e 's|^dnpass\s*=.*|dnpass = '${LDAP_BIND_PW:="admin"}'|g' \
+          /etc/dovecot/dovecot-ldap.conf.ext
+
+  echo "Enabling dovecot LDAP authentification"
+  sed -i -e '/\!include auth-ldap\.conf\.ext/s/^#//' /etc/dovecot/conf.d/10-auth.conf
+  sed -i -e '/\!include auth-passwdfile\.inc/s/^/#/' /etc/dovecot/conf.d/10-auth.conf
+
+  echo "Configuring LDAP"
+  [ -f /etc/postfix/ldap-users.cf ] && \
+  postconf -e "virtual_mailbox_maps = ldap:/etc/postfix/ldap-users.cf" || \
+    echo '==> Warning: /etc/postfix/ldap-user.cf not found'
+
+  [ -f /etc/postfix/ldap-aliases.cf -a -f /etc/postfix/ldap-groups.cf ] && \
+  postconf -e "virtual_alias_maps = ldap:/etc/postfix/ldap-aliases.cf, ldap:/etc/postfix/ldap-groups.cf" || \
+    echo '==> Warning: /etc/postfix/ldap-aliases.cf or /etc/postfix/ldap-groups.cf not found'
+  
+   [ ! -f /etc/postfix/sasl/smtpd.conf ] && cat > /etc/postfix/sasl/smtpd.conf << EOF
+pwcheck_method: saslauthd
+mech_list: plain login
+EOF
+fi
+
+#
+# SASLAUTHD
+#
+if [ "$ENABLE_SASLAUTHD" = 1 ]; then
+  echo "Configuring Cyrus SASL"
+  # checking env vars and setting defaults
+  [ -z $SASLAUTHD_MECHANISMS ] && SASLAUTHD_MECHANISMS=pam
+  [ -z $SASLAUTHD_LDAP_SEARCH_BASE ] && SASLAUTHD_MECHANISMS=pam
+  [ -z $SASLAUTHD_LDAP_SERVER ] && SASLAUTHD_LDAP_SERVER=localhost
+  [ -z $SASLAUTHD_LDAP_FILTER ] && SASLAUTHD_LDAP_FILTER='(&(uniqueIdentifier=%u)(mailEnabled=TRUE))'
+  ([ $SASLAUTHD_LDAP_SSL == 0 ] || [ -z $SASLAUTHD_LDAP_SSL ]) && SASLAUTHD_LDAP_PROTO='ldap://' || SASLAUTHD_LDAP_PROTO='ldaps://'
+
+  if [ ! -f /etc/saslauthd.conf ]; then
+    echo "Creating /etc/saslauthd.conf"
+    cat > /etc/saslauthd.conf << EOF
+ldap_servers: ${SASLAUTHD_LDAP_PROTO}${SASLAUTHD_LDAP_SERVER}
+
+ldap_auth_method: bind
+ldap_bind_dn: ${SASLAUTHD_LDAP_BIND_DN}
+ldap_bind_pw: ${SASLAUTHD_LDAP_PASSWORD}
+
+ldap_search_base: ${SASLAUTHD_LDAP_SEARCH_BASE}
+ldap_filter: ${SASLAUTHD_LDAP_FILTER}
+
+ldap_referrals: yes
+log_level: 10
+EOF
+  fi
+  
+  sed -i -e "s|^START=.*|START=yes|g" \
+         -e "s|^MECHANISMS=.*|MECHANISMS="\"$SASLAUTHD_MECHANISMS\""|g" \
+         -e "s|^MECH_OPTIONS=.*|MECH_OPTIONS="\"$SASLAUTHD_MECH_OPTIONS\""|g" \
+         /etc/default/saslauthd
+  sed -i -e "/smtpd_sasl_path =.*/d" \
+         -e "/smtpd_sasl_type =.*/d" \
+         -e "/dovecot_destination_recipient_limit =.*/d" \
+         /etc/postfix/main.cf
+  gpasswd -a postfix sasl
 fi
 
 #
@@ -116,19 +219,6 @@ if [ -e "/tmp/docker-mailserver/opendkim/KeyTable" ]; then
   chmod -R 0700 /etc/opendkim/keys/
 else
   echo "No DKIM key provided. Check the documentation to find how to get your keys."
-fi
-
-# DMARC
-# if there is no AuthservID create it
-if [ `cat /etc/opendmarc.conf | grep -w AuthservID | wc -l` -eq 0 ]; then
-  echo "AuthservID $(hostname)" >> /etc/opendmarc.conf
-fi
-if [ `cat /etc/opendmarc.conf | grep -w TrustedAuthservIDs | wc -l` -eq 0 ]; then
-  echo "TrustedAuthservIDs $(hostname)" >> /etc/opendmarc.conf
-fi
-if [ ! -f "/etc/opendmarc/ignore.hosts" ]; then
-  mkdir -p /etc/opendmarc/
-  echo "localhost" >> /etc/opendmarc/ignore.hosts
 fi
 
 # SSL Configuration
@@ -243,7 +333,7 @@ fi
 
 echo "Postfix configurations"
 touch /etc/postfix/vmailbox && postmap /etc/postfix/vmailbox
-echo "register@${DOMAIN_NAME} register" >> /etc/postfix/virtual && postmap /etc/postfix/virtual
+touch /etc/postfix/virtual && postmap /etc/postfix/virtual
 
 # PERMIT_DOCKER Option
 container_ip=$(ip addr show eth0 | grep 'inet ' | sed 's/[^0-9\.\/]*//g' | cut -d '/' -f 1)
@@ -442,8 +532,14 @@ if [ "$ENABLE_FAIL2BAN" = 1 ]; then
   /etc/init.d/fail2ban start
 fi
 
-echo "Listing users"
-/usr/sbin/dovecot user '*'
+if [ "$ENABLE_SASLAUTHD" = 1 ]; then
+  /etc/init.d/saslauthd start
+fi
+
+if [ "$SMTP_ONLY" != 1 ]; then
+  echo "Listing users"
+  /usr/sbin/dovecot user '*'
+fi
 
 echo "Starting..."
 tail -f /var/log/mail/mail.log
