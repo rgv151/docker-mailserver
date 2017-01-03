@@ -1,6 +1,13 @@
+branches:
+  except:
+  - donttestme
 language: bash
 sudo: required
 services:
-  - docker
+- docker
+install:
+- travis_wait make build-no-cache
 script:
-  - make all
+- make generate-accounts run fixtures tests
+after_script:
+- make clean
