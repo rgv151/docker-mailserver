@@ -38,6 +38,8 @@ Before you open an issue, please have a look this `README`, the [Wiki](https://g
 
 Adapt this file with your FQDN. Install [docker-compose](https://docs.docker.com/compose/) in the version `1.6` or higher.
 
+Your configs must be mounted in `/tmp/docker-mailserver/`. To understand how things work on boot, please have a look to [start-mailserver.sh](https://github.com/tomav/docker-mailserver/blob/master/target/start-mailserver.sh)
+
 ```yaml	
 version: '2'
 
@@ -91,6 +93,8 @@ Don't forget to adapt MAIL_USER and MAIL_PASS to your needs
       -ti tvial/docker-mailserver:latest generate-dkim-config
 
 Now the keys are generated, you can configure your DNS server by just pasting the content of `config/opendkim/keys/domain.tld/mail.txt` in your `domain.tld.hosts` zone.
+
+Note: you can also manage email accounts, DKIM keys and more with the [setup.sh convenience script](https://github.com/tomav/docker-mailserver/wiki/Setup-docker-mailserver-using-the-script-setup.sh).
 
 #### Start the container
 
