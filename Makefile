@@ -47,8 +47,17 @@ run:
 		-v "`pwd`/test/config":/tmp/docker-mailserver \
 		-v "`pwd`/test":/tmp/docker-mailserver-test \
 		-e SMTP_ONLY=1 \
-		-e PERMIT_DOCKER=network\
-		-h mail.my-domain.com -t $(NAME)
+		-e PERMIT_DOCKER=network \
+		-e OVERRIDE_HOSTNAME=mail.my-domain.com \
+		-t $(NAME)
+	sleep 15
+	docker run -d --name mail_override_hostname \
+		-v "`pwd`/test/config":/tmp/docker-mailserver \
+		-v "`pwd`/test":/tmp/docker-mailserver-test \
+		-e PERMIT_DOCKER=network \
+		-e OVERRIDE_HOSTNAME=mail.my-domain.com \
+		-h unknown.domain.tld \
+		-t $(NAME)
 	sleep 15
 	docker run -d --name mail_fail2ban \
 		-v "`pwd`/test/config":/tmp/docker-mailserver \
@@ -81,7 +90,7 @@ run:
 	sleep 15
 	docker run -d --name ldap_for_mail \
 		-e LDAP_DOMAIN="localhost.localdomain" \
-		-h mail.my-domain.com -t ldap
+		-h ldap.my-domain.com -t ldap
 	sleep 15
 	docker run -d --name mail_with_ldap \
 		-v "`pwd`/test/config":/tmp/docker-mailserver \
@@ -110,6 +119,24 @@ run:
 		-h mail.my-domain.com -t $(NAME)
 	# Wait for containers to fully start
 	sleep 15
+	docker run -d --name mail_lmtp_ip \
+		-v "`pwd`/test/config":/tmp/docker-mailserver \
+		-v "`pwd`/test/config/dovecot-lmtp":/etc/dovecot \
+		-v "`pwd`/test":/tmp/docker-mailserver-test \
+		-e ENABLE_POSTFIX_VIRTUAL_TRANSPORT=1 \
+		-e POSTFIX_DAGENT=lmtp:127.0.0.1:24 \
+		-h mail.my-domain.com -t $(NAME)
+	sleep 30
+	docker run -d --name mail_with_postgrey \
+		-v "`pwd`/test/config":/tmp/docker-mailserver \
+		-v "`pwd`/test":/tmp/docker-mailserver-test \
+		-e ENABLE_POSTGREY=1 \
+		-e POSTGREY_DELAY=15 \
+		-e POSTGREY_MAX_AGE=35 \
+		-e POSTGREY_TEXT="Delayed by postgrey" \
+		-h mail.my-domain.com -t $(NAME)
+	sleep 20
+
 
 fixtures:
 	cp config/postfix-accounts.cf config/postfix-accounts.cf.bak
@@ -130,12 +157,16 @@ fixtures:
 	docker exec mail /bin/sh -c "nc 0.0.0.0 25 < /tmp/docker-mailserver-test/email-templates/sieve-spam-folder.txt"
 	docker exec mail /bin/sh -c "nc 0.0.0.0 25 < /tmp/docker-mailserver-test/email-templates/non-existing-user.txt"
 	docker exec mail_disabled_clamav_spamassassin /bin/sh -c "nc 0.0.0.0 25 < /tmp/docker-mailserver-test/email-templates/existing-user.txt"
+	# postfix virtual transport lmtp
+	docker exec mail_lmtp_ip /bin/sh -c "nc 0.0.0.0 25 < /tmp/docker-mailserver-test/email-templates/existing-user.txt"
+
+	docker exec mail_override_hostname /bin/sh -c "nc 0.0.0.0 25 < /tmp/docker-mailserver-test/email-templates/existing-user.txt"
 	# Wait for mails to be analyzed
-	sleep 10
+	sleep 20
 
 tests:
 	# Start tests
-	./test/bats/bats test/tests.bats
+	./test/bats/bin/bats test/tests.bats
 
 clean:
 	# Remove running test containers
@@ -150,7 +181,10 @@ clean:
 		mail_manual_ssl \
 		ldap_for_mail \
 		mail_with_ldap \
-		mail_with_imap
+		mail_with_imap \
+		mail_lmtp_ip \
+		mail_with_postgrey \
+		mail_override_hostname
 
 	@if [ -f config/postfix-accounts.cf.bak ]; then\
 		rm -f config/postfix-accounts.cf ;\

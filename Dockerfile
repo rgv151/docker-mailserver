@@ -44,6 +44,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update -q --fix-missing && \
     rsyslog \
     sasl2-bin \
     spamassassin \
+    postgrey \
     unzip \
     && \
   curl -sk http://neuro.debian.net/lists/trusty.de-m.libre > /etc/apt/sources.list.d/neurodebian.sources.list && \
@@ -75,11 +76,18 @@ COPY target/postfix/ldap-users.cf target/postfix/ldap-groups.cf target/postfix/l
 # Enables Spamassassin CRON updates
 RUN sed -i -r 's/^(CRON)=0/\1=1/g' /etc/default/spamassassin
 
+#Enables Postgrey
+COPY target/postgrey/postgrey /etc/default/postgrey
+COPY target/postgrey/postgrey.init /etc/init.d/postgrey
+RUN chmod 755 /etc/init.d/postgrey
+RUN mkdir /var/run/postgrey
+RUN chown postgrey:postgrey /var/run/postgrey
+
 # Enables Amavis
 RUN sed -i -r 's/#(@|   \\%)bypass/\1bypass/g' /etc/amavis/conf.d/15-content_filter_mode
 RUN adduser clamav amavis && adduser amavis clamav
 RUN useradd -u 5000 -d /home/docker -s /bin/bash -p $(echo docker | openssl passwd -1 -stdin) docker
-RUN (echo "0 4 * * * find /var/lib/amavis/virusmails/ -type f -mtime +\$VIRUSMAILS_DELETE_DELAY -delete" ; crontab -l) | crontab -
+RUN (echo "0 4 * * * /usr/local/bin/virus-wiper" ; crontab -l) | crontab -
 
 # Configure Fail2ban
 COPY target/fail2ban/jail.conf /etc/fail2ban/jail.conf
@@ -108,6 +116,7 @@ RUN sed -i 's/START_DAEMON=no/START_DAEMON=yes/g' /etc/default/fetchmail
 # Configures Postfix
 COPY target/postfix/main.cf target/postfix/master.cf /etc/postfix/
 RUN echo "" > /etc/aliases
+RUN openssl dhparam -out /etc/postfix/dhparams.pem 2048
 
 # Configuring Logs
 RUN sed -i -r "/^#?compress/c\compress\ncopytruncate" /etc/logrotate.conf && \
@@ -123,7 +132,7 @@ RUN sed -i -r "/^#?compress/c\compress\ncopytruncate" /etc/logrotate.conf && \
   sed -i -r 's|/var/log/mail|/var/log/mail/mail|g' /etc/logrotate.d/rsyslog
 
 # Get LetsEncrypt signed certificate
-RUN curl -s https://letsencrypt.org/certs/lets-encrypt-x3-cross-signed.pem > /etc/ssl/certs/lets-encrypt-x3-cross-signed.pem 
+RUN curl -s https://letsencrypt.org/certs/lets-encrypt-x3-cross-signed.pem > /etc/ssl/certs/lets-encrypt-x3-cross-signed.pem
 
 # Configure GPG-Mailgate
 RUN mkdir -p /var/gpgmailgate/.gnupg && mkdir -p /var/gpgmailgate/smime && usermod -d /var/gpgmailgate nobody

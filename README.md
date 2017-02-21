@@ -18,6 +18,7 @@ Includes:
 - opendmarc
 - fail2ban
 - fetchmail
+- postgrey
 - basic [sieve support](https://github.com/tomav/docker-mailserver/wiki/Configure-Sieve-filters) using dovecot
 - [LetsEncrypt](https://letsencrypt.org/) and self-signed certificates
 - persistent data and state (but think about backups!)
@@ -62,6 +63,7 @@ services:
     - ENABLE_SPAMASSASSIN=1
     - ENABLE_CLAMAV=1
     - ENABLE_FAIL2BAN=1
+    - ENABLE_POSTGREY=1
     - ONE_DIR=1
     - DMS_DEBUG=0
     cap_add:
@@ -141,6 +143,11 @@ Note: this spamassassin setting needs `ENABLE_SPAMASSASSIN=1`
 
 Note: this spamassassin setting needs `ENABLE_SPAMASSASSIN=1`
 
+##### ONE_DIR
+
+  - **0** => state in default directories
+  - 1 => consolidate all states into a single directory (`/var/mail-state`) to allow persistence using docker volumes
+
 ##### ENABLE_POP3
 
   - **empty** => POP3 service disabled
@@ -196,10 +203,38 @@ Otherwise, `iptables` won't be able to ban IPs.
   - **empty** => admin
   - => Specify the password to bind against ldap
 
+##### OVERRIDE_HOSTNAME
+
+  - **empty** => uses the `hostname` command to get the mail server's canonical hostname
+  - => Specify a fully-qualified domainname to serve mail for.  This is used for many of the config features so if you can't set your hostname (e.g. you're in a container platform that doesn't let you) specify it in this environment variable.
+
 ##### POSTMASTER_ADDRESS
 
   - **empty** => postmaster@domain.com
   - => Specify the postmaster address
+
+#### ENABLE_POSTGREY
+
+  - **0** => `postgrey` is disabled
+  - 1 => `postgrey` is enabled
+
+##### POSTGREY_DELAY
+
+  - **300** => greylist for N seconds
+
+Note: This postgrey setting needs `ENABLE_POSTGREY=1`
+
+##### POSTGREY_MAX_AGE
+  
+  - **35** => delete entries older than N days since the last time that they have been seen
+
+Note: This postgrey setting needs `ENABLE_POSTGREY=1`
+
+##### POSTGREY_TEXT
+  
+  - **Delayed by postgrey** => response when a mail is greylisted
+
+Note: This postgrey setting needs `ENABLE_POSTGREY=1`
 
 ##### ENABLE_SASLAUTHD
 
@@ -282,3 +317,20 @@ Set different options for mynetworks option (can be overwrite in postfix-main.cf
 
 Set how many days a virusmail will stay on the server before being deleted
   - **empty** => 7 days
+
+
+##### ENABLE_POSTFIX_VIRTUAL_TRANSPORT
+
+This Option is activating the Usage of POSTFIX_DAGENT to specify a ltmp client different from default dovecot socket.
+    - **empty** => disabled
+    - 1 => enabled
+
+##### POSTFIX_DAGENT
+
+Enabled by ENABLE_POSTFIX_VIRTUAL_TRANSPORT. Specify the final delivery of postfix
+    - **empty**: fail
+    - lmtp:unix:private/dovecot-lmtp (use socket)
+    - lmtps:inet:<host>:<port> (secure lmtp with starttls, take a look at https://sys4.de/en/blog/2014/11/17/sicheres-lmtp-mit-starttls-in-dovecot/)
+    - lmtp:<kopano-host>:2003 (use kopano as mailstore)
+    - etc.
+

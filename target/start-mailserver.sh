@@ -3,7 +3,7 @@
 ##########################################################################
 # >> DEFAULT VARS
 #
-# add them here. 
+# add them here.
 # Example: DEFAULT_VARS["KEY"]="VALUE"
 ##########################################################################
 declare -A DEFAULT_VARS
@@ -14,29 +14,47 @@ DEFAULT_VARS["ENABLE_FAIL2BAN"]="${ENABLE_FAIL2BAN:="0"}"
 DEFAULT_VARS["ENABLE_MANAGESIEVE"]="${ENABLE_MANAGESIEVE:="0"}"
 DEFAULT_VARS["ENABLE_FETCHMAIL"]="${ENABLE_FETCHMAIL:="0"}"
 DEFAULT_VARS["ENABLE_LDAP"]="${ENABLE_LDAP:="0"}"
+DEFAULT_VARS["ENABLE_POSTGREY"]="${ENABLE_POSTGREY:="0"}"
+DEFAULT_VARS["POSTGREY_DELAY"]="${POSTGREY_DELAY:="300"}"
+DEFAULT_VARS["POSTGREY_MAX_AGE"]="${POSTGREY_MAX_AGE:="35"}"
+DEFAULT_VARS["POSTGREY_TEXT"]="${POSTGREY_TEXT:="Delayed by postgrey"}"
 DEFAULT_VARS["ENABLE_SASLAUTHD"]="${ENABLE_SASLAUTHD:="0"}"
 DEFAULT_VARS["SMTP_ONLY"]="${SMTP_ONLY:="0"}"
 DEFAULT_VARS["VIRUSMAILS_DELETE_DELAY"]="${VIRUSMAILS_DELETE_DELAY:="7"}"
 DEFAULT_VARS["DMS_DEBUG"]="${DMS_DEBUG:="0"}"
+DEFAULT_VARS["OVERRIDE_HOSTNAME"]="${OVERRIDE_HOSTNAME}"
 ##########################################################################
 # << DEFAULT VARS
+##########################################################################
+
+##########################################################################
+# >> GLOBAL VARS
+#
+# add your global script variables here.
+#
+# Example: KEY="VALUE"
+##########################################################################
+HOSTNAME="$(hostname -f)"
+DOMAINNAME="$(hostname -d)"
+##########################################################################
+# << GLOBAL VARS
 ##########################################################################
 
 
 ##########################################################################
 # >> REGISTER FUNCTIONS
 #
-# add your new functions/methods here. 
+# add your new functions/methods here.
 #
 # NOTE: position matters when registering a function in stacks. First in First out
-# 		Execution Logic: 
+# 		Execution Logic:
 # 			> check functions
 # 			> setup functions
 # 			> fix functions
 # 			> misc functions
 # 			> start-daemons
 #
-# Example: 
+# Example:
 # if [ CONDITION IS MET ]; then
 #   _register_{setup,fix,check,start}_{functions,daemons} "$FUNCNAME"
 # fi
@@ -76,11 +94,19 @@ function register_functions() {
 		_register_setup_function "_setup_postfix_sasl"
 	fi
 
+	if [ "$ENABLE_POSTGREY" = 1 ];then
+		_register_setup_function "_setup_postgrey"
+	fi
+
 	_register_setup_function "_setup_dkim"
 	_register_setup_function "_setup_ssl"
 	_register_setup_function "_setup_docker_permit"
 
 	_register_setup_function "_setup_mailname"
+	_register_setup_function "_setup_amavis"
+	_register_setup_function "_setup_dmarc_hostname"
+	_register_setup_function "_setup_postfix_hostname"
+	_register_setup_function "_setup_dovecot_hostname"
 
 	_register_setup_function "_setup_postfix_override_configuration"
 	_register_setup_function "_setup_postfix_sasl_password"
@@ -92,18 +118,23 @@ function register_functions() {
 		_register_setup_function "_setup_postfix_relay_amazon_ses"
 	fi
 
+	if [ "$ENABLE_POSTFIX_VIRTUAL_TRANSPORT" = 1  ]; then
+		_register_setup_function "_setup_postfix_virtual_transport"
+	fi
+
 	################### << setup funcs
 
 	################### >> fix funcs
 
 	_register_fix_function "_fix_var_mail_permissions"
+	_register_fix_function "_fix_var_amavis_permissions"
 
 	################### << fix funcs
 
 	################### >> misc funcs
 
 	_register_misc_function "_misc_save_states"
-	
+
 	################### << misc funcs
 
 	################### >> daemon funcs
@@ -122,6 +153,12 @@ function register_functions() {
 	# needs to be started before saslauthd
 	_register_start_daemon "_start_daemons_opendkim"
 	_register_start_daemon "_start_daemons_opendmarc"
+
+	#postfix uses postgrey, needs to be started before postfix
+	if [ "$ENABLE_POSTGREY" = 1 ]; then
+		_register_start_daemon "_start_daemons_postgrey"
+	fi
+
 	_register_start_daemon "_start_daemons_postfix"
 
 	if [ "$ENABLE_SASLAUTHD" = 1 ];then
@@ -141,7 +178,8 @@ function register_functions() {
 		_register_start_daemon "_start_daemons_clamav"
 	fi
 
-  _register_start_daemon "_start_daemons_amavis"
+
+	_register_start_daemon "_start_daemons_amavis"
 	################### << daemon funcs
 }
 ##########################################################################
@@ -259,7 +297,7 @@ function notify () {
 }
 
 function defunc() {
-	notify 'fatal' "Please fix your configuration. Exiting..." 
+	notify 'fatal' "Please fix your configuration. Exiting..."
 	exit 1
 }
 
@@ -298,13 +336,19 @@ function check() {
 }
 
 function _check_hostname() {
-	notify "task" "Check that hostname/domainname is provided (no default docker hostname) [$FUNCNAME]"
+	notify "task" "Check that hostname/domainname is provided or overidden (no default docker hostname/kubernetes) [$FUNCNAME]"
 
-	if ( ! echo $(hostname) | grep -E '^(\S+[.]\S+)$' > /dev/null ); then
+	if [[ ! -z ${DEFAULT_VARS["OVERRIDE_HOSTNAME"]} ]]; then
+		export HOSTNAME=${DEFAULT_VARS["OVERRIDE_HOSTNAME"]}
+		export DOMAINNAME=$(echo $HOSTNAME | sed s/[^.]*.//)
+	fi
+
+	if ( ! echo $HOSTNAME | grep -E '^(\S+[.]\S+)$' > /dev/null ); then
 		notify 'err' "Setting hostname/domainname is required"
 		return 1
-	else 
-		notify 'inf' "Hostname has been set to $(hostname)"
+	else
+		notify 'inf' "Domain has been set to $DOMAINNAME"
+		notify 'inf' "Hostname has been set to $HOSTNAME"
 		return 0
 	fi
 }
@@ -344,7 +388,37 @@ function _setup_mailname() {
 	notify 'task' 'Setting up Mailname'
 
 	notify 'inf' "Creating /etc/mailname"
-	echo $(hostname -d) > /etc/mailname
+	echo $DOMAINNAME > /etc/mailname
+}
+
+function _setup_amavis() {
+	notify 'task' 'Setting up Amavis'
+
+	notify 'inf' "Applying hostname to /etc/amavis/conf.d/05-node_id"
+	sed -i 's/^#\$myhostname = "mail.example.com";/\$myhostname = "'$HOSTNAME'";/' /etc/amavis/conf.d/05-node_id
+}
+
+function _setup_dmarc_hostname() {
+	notify 'task' 'Setting up dmarc'
+
+	notify 'inf' "Applying hostname to /etc/opendmarc.conf"
+	sed -i -e 's/^AuthservID.*$/AuthservID          '$HOSTNAME'/g' \
+	       -e 's/^TrustedAuthservIDs.*$/TrustedAuthservIDs  '$HOSTNAME'/g' /etc/opendmarc.conf
+}
+
+function _setup_postfix_hostname() {
+	notify 'task' 'Applying hostname and domainname to Postfix'
+
+	notify 'inf' "Applying hostname to /etc/postfix/main.cf"
+	postconf -e "myhostname = $HOSTNAME"
+	postconf -e "mydomain = $DOMAINNAME"
+}
+
+function _setup_dovecot_hostname() {
+	notify 'task' 'Applying hostname to Dovecot'
+
+	notify 'inf' "Applying hostname to /etc/dovecot/conf.d/15-lda.conf"
+	sed -i 's/^#hostname =.*$/hostname = '$HOSTNAME'/g' /etc/dovecot/conf.d/15-lda.conf
 }
 
 function _setup_dovecot() {
@@ -429,7 +503,7 @@ function _setup_ldap() {
 			/etc/postfix/ldap-${i}.cf
 	done
 
-  notify 'inf' "Configuring dovecot LDAP authentification"
+	notify 'inf' "Configuring dovecot LDAP authentification"
 	sed -i -e 's|^hosts.*|hosts = '${LDAP_SERVER_HOST:="mail.domain.com"}'|g' \
 		-e 's|^base.*|base = '${LDAP_SEARCH_BASE:="ou=people,dc=domain,dc=com"}'|g' \
 		-e 's|^dn\s*=.*|dn = '${LDAP_BIND_DN:="cn=admin,dc=domain,dc=com"}'|g' \
@@ -437,7 +511,7 @@ function _setup_ldap() {
 		/etc/dovecot/dovecot-ldap.conf.ext
 
 	# Add  domainname to vhost.
-	echo $(hostname -d) >> /tmp/vhost.tmp
+	echo $DOMAINNAME >> /tmp/vhost.tmp
 
 	notify 'inf' "Enabling dovecot LDAP authentification"
 	sed -i -e '/\!include auth-ldap\.conf\.ext/s/^#//' /etc/dovecot/conf.d/10-auth.conf
@@ -455,6 +529,18 @@ function _setup_ldap() {
 	return 0
 }
 
+function _setup_postgrey() {
+	notify 'inf' "Configuring postgrey"
+	sed -i -e 's/bl.spamcop.net$/bl.spamcop.net, check_policy_service inet:127.0.0.1:10023/' /etc/postfix/main.cf
+	sed -i -e "s/\"--inet=10023\"/\"--inet=10023 --delay=$POSTGREY_DELAY --max-age=$POSTGREY_MAX_AGE\"/" /etc/default/postgrey
+	TEXT_FOUND=`grep -i "POSTGREY_TEXT" /etc/default/postgrey | wc -l`
+
+	if [ $TEXT_FOUND -eq 0 ]; then
+		printf "POSTGREY_TEXT=\"$POSTGREY_TEXT\"\n\n" >> /etc/default/postgrey
+	fi
+}
+
+
 function _setup_postfix_sasl() {
 	[ ! -f /etc/postfix/sasl/smtpd.conf ] && cat > /etc/postfix/sasl/smtpd.conf << EOF
 pwcheck_method: saslauthd
@@ -468,11 +554,11 @@ function _setup_saslauthd() {
 
 	notify 'inf' "Configuring Cyrus SASL"
 	# checking env vars and setting defaults
-	[ -z $SASLAUTHD_MECHANISMS ] && SASLAUTHD_MECHANISMS=pam
-	[ "$SASLAUTHD_MECHANISMS" = ldap -a -z $SASLAUTHD_LDAP_SEARCH_BASE ] && SASLAUTHD_MECHANISMS=pam
-	[ -z $SASLAUTHD_LDAP_SERVER ] && SASLAUTHD_LDAP_SERVER=localhost
-	[ -z $SASLAUTHD_LDAP_FILTER ] && SASLAUTHD_LDAP_FILTER='(&(uniqueIdentifier=%u)(mailEnabled=TRUE))'
-	([ -z $SASLAUTHD_LDAP_SSL ] || [ $SASLAUTHD_LDAP_SSL == 0 ]) && SASLAUTHD_LDAP_PROTO='ldap://' || SASLAUTHD_LDAP_PROTO='ldaps://'
+	[ -z "$SASLAUTHD_MECHANISMS" ] && SASLAUTHD_MECHANISMS=pam
+	[ "$SASLAUTHD_MECHANISMS" = ldap -a -z "$SASLAUTHD_LDAP_SEARCH_BASE" ] && SASLAUTHD_MECHANISMS=pam
+	[ -z "$SASLAUTHD_LDAP_SERVER" ] && SASLAUTHD_LDAP_SERVER=localhost
+	[ -z "$SASLAUTHD_LDAP_FILTER" ] && SASLAUTHD_LDAP_FILTER='(&(uniqueIdentifier=%u)(mailEnabled=TRUE))'
+	([ -z "$SASLAUTHD_LDAP_SSL" ] || [ $SASLAUTHD_LDAP_SSL == 0 ]) && SASLAUTHD_LDAP_PROTO='ldap://' || SASLAUTHD_LDAP_PROTO='ldaps://'
 
 	if [ ! -f /etc/saslauthd.conf ]; then
 		notify 'inf' "Creating /etc/saslauthd.conf"
@@ -571,24 +657,24 @@ function _setup_ssl() {
 	case $SSL_TYPE in
 		"letsencrypt" )
 			# letsencrypt folders and files mounted in /etc/letsencrypt
-			if [ -e "/etc/letsencrypt/live/$(hostname)/cert.pem" ] \
-			&& [ -e "/etc/letsencrypt/live/$(hostname)/fullchain.pem" ]; then
+			if [ -e "/etc/letsencrypt/live/$HOSTNAME/cert.pem" ] \
+			&& [ -e "/etc/letsencrypt/live/$HOSTNAME/fullchain.pem" ]; then
 				KEY=""
-				if [ -e "/etc/letsencrypt/live/$(hostname)/privkey.pem" ]; then
+				if [ -e "/etc/letsencrypt/live/$HOSTNAME/privkey.pem" ]; then
 					KEY="privkey"
-				elif [ -e "/etc/letsencrypt/live/$(hostname)/key.pem" ]; then
+				elif [ -e "/etc/letsencrypt/live/$HOSTNAME/key.pem" ]; then
 					KEY="key"
 				fi
 				if [ -n "$KEY" ]; then
-					notify 'inf' "Adding $(hostname) SSL certificate"
+					notify 'inf' "Adding $HOSTNAME SSL certificate"
 
 					# Postfix configuration
-					sed -i -r 's~smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem~smtpd_tls_cert_file=/etc/letsencrypt/live/'$(hostname)'/fullchain.pem~g' /etc/postfix/main.cf
-					sed -i -r 's~smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key~smtpd_tls_key_file=/etc/letsencrypt/live/'$(hostname)'/'"$KEY"'\.pem~g' /etc/postfix/main.cf
+					sed -i -r 's~smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem~smtpd_tls_cert_file=/etc/letsencrypt/live/'$HOSTNAME'/fullchain.pem~g' /etc/postfix/main.cf
+					sed -i -r 's~smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key~smtpd_tls_key_file=/etc/letsencrypt/live/'$HOSTNAME'/'"$KEY"'\.pem~g' /etc/postfix/main.cf
 
 					# Dovecot configuration
-					sed -i -e 's~ssl_cert = </etc/dovecot/dovecot\.pem~ssl_cert = </etc/letsencrypt/live/'$(hostname)'/fullchain\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
-					sed -i -e 's~ssl_key = </etc/dovecot/private/dovecot\.pem~ssl_key = </etc/letsencrypt/live/'$(hostname)'/'"$KEY"'\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
+					sed -i -e 's~ssl_cert = </etc/dovecot/dovecot\.pem~ssl_cert = </etc/letsencrypt/live/'$HOSTNAME'/fullchain\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
+					sed -i -e 's~ssl_key = </etc/dovecot/private/dovecot\.pem~ssl_key = </etc/letsencrypt/live/'$HOSTNAME'/'"$KEY"'\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
 
 					notify 'inf' "SSL configured with 'letsencrypt' certificates"
 				fi
@@ -596,18 +682,18 @@ function _setup_ssl() {
 		;;
 	"custom" )
 		# Adding CA signed SSL certificate if provided in 'postfix/ssl' folder
-		if [ -e "/tmp/docker-mailserver/ssl/$(hostname)-full.pem" ]; then
-			notify 'inf' "Adding $(hostname) SSL certificate"
+		if [ -e "/tmp/docker-mailserver/ssl/$HOSTNAME-full.pem" ]; then
+			notify 'inf' "Adding $HOSTNAME SSL certificate"
 			mkdir -p /etc/postfix/ssl
-			cp "/tmp/docker-mailserver/ssl/$(hostname)-full.pem" /etc/postfix/ssl
+			cp "/tmp/docker-mailserver/ssl/$HOSTNAME-full.pem" /etc/postfix/ssl
 
 			# Postfix configuration
-			sed -i -r 's~smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem~smtpd_tls_cert_file=/etc/postfix/ssl/'$(hostname)'-full.pem~g' /etc/postfix/main.cf
-			sed -i -r 's~smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key~smtpd_tls_key_file=/etc/postfix/ssl/'$(hostname)'-full.pem~g' /etc/postfix/main.cf
+			sed -i -r 's~smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem~smtpd_tls_cert_file=/etc/postfix/ssl/'$HOSTNAME'-full.pem~g' /etc/postfix/main.cf
+			sed -i -r 's~smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key~smtpd_tls_key_file=/etc/postfix/ssl/'$HOSTNAME'-full.pem~g' /etc/postfix/main.cf
 
 			# Dovecot configuration
-			sed -i -e 's~ssl_cert = </etc/dovecot/dovecot\.pem~ssl_cert = </etc/postfix/ssl/'$(hostname)'-full\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
-			sed -i -e 's~ssl_key = </etc/dovecot/private/dovecot\.pem~ssl_key = </etc/postfix/ssl/'$(hostname)'-full\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
+			sed -i -e 's~ssl_cert = </etc/dovecot/dovecot\.pem~ssl_cert = </etc/postfix/ssl/'$HOSTNAME'-full\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
+			sed -i -e 's~ssl_key = </etc/dovecot/private/dovecot\.pem~ssl_key = </etc/postfix/ssl/'$HOSTNAME'-full\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
 
 			notify 'inf' "SSL configured with 'CA signed/custom' certificates"
 		fi
@@ -636,29 +722,29 @@ function _setup_ssl() {
 	;;
 "self-signed" )
 	# Adding self-signed SSL certificate if provided in 'postfix/ssl' folder
-	if [ -e "/tmp/docker-mailserver/ssl/$(hostname)-cert.pem" ] \
-	&& [ -e "/tmp/docker-mailserver/ssl/$(hostname)-key.pem"  ] \
-	&& [ -e "/tmp/docker-mailserver/ssl/$(hostname)-combined.pem" ] \
+	if [ -e "/tmp/docker-mailserver/ssl/$HOSTNAME-cert.pem" ] \
+	&& [ -e "/tmp/docker-mailserver/ssl/$HOSTNAME-key.pem"  ] \
+	&& [ -e "/tmp/docker-mailserver/ssl/$HOSTNAME-combined.pem" ] \
 	&& [ -e "/tmp/docker-mailserver/ssl/demoCA/cacert.pem" ]; then
-		notify 'inf' "Adding $(hostname) SSL certificate"
+		notify 'inf' "Adding $HOSTNAME SSL certificate"
 		mkdir -p /etc/postfix/ssl
-		cp "/tmp/docker-mailserver/ssl/$(hostname)-cert.pem" /etc/postfix/ssl
-		cp "/tmp/docker-mailserver/ssl/$(hostname)-key.pem" /etc/postfix/ssl
+		cp "/tmp/docker-mailserver/ssl/$HOSTNAME-cert.pem" /etc/postfix/ssl
+		cp "/tmp/docker-mailserver/ssl/$HOSTNAME-key.pem" /etc/postfix/ssl
 		# Force permission on key file
-		chmod 600 /etc/postfix/ssl/$(hostname)-key.pem
-		cp "/tmp/docker-mailserver/ssl/$(hostname)-combined.pem" /etc/postfix/ssl
+		chmod 600 /etc/postfix/ssl/$HOSTNAME-key.pem
+		cp "/tmp/docker-mailserver/ssl/$HOSTNAME-combined.pem" /etc/postfix/ssl
 		cp /tmp/docker-mailserver/ssl/demoCA/cacert.pem /etc/postfix/ssl
 
 		# Postfix configuration
-		sed -i -r 's~smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem~smtpd_tls_cert_file=/etc/postfix/ssl/'$(hostname)'-cert.pem~g' /etc/postfix/main.cf
-		sed -i -r 's~smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key~smtpd_tls_key_file=/etc/postfix/ssl/'$(hostname)'-key.pem~g' /etc/postfix/main.cf
+		sed -i -r 's~smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem~smtpd_tls_cert_file=/etc/postfix/ssl/'$HOSTNAME'-cert.pem~g' /etc/postfix/main.cf
+		sed -i -r 's~smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key~smtpd_tls_key_file=/etc/postfix/ssl/'$HOSTNAME'-key.pem~g' /etc/postfix/main.cf
 		sed -i -r 's~#smtpd_tls_CAfile=~smtpd_tls_CAfile=/etc/postfix/ssl/cacert.pem~g' /etc/postfix/main.cf
 		sed -i -r 's~#smtp_tls_CAfile=~smtp_tls_CAfile=/etc/postfix/ssl/cacert.pem~g' /etc/postfix/main.cf
-		ln -s /etc/postfix/ssl/cacert.pem "/etc/ssl/certs/cacert-$(hostname).pem"
+		ln -s /etc/postfix/ssl/cacert.pem "/etc/ssl/certs/cacert-$HOSTNAME.pem"
 
 		# Dovecot configuration
-		sed -i -e 's~ssl_cert = </etc/dovecot/dovecot\.pem~ssl_cert = </etc/postfix/ssl/'$(hostname)'-combined\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
-		sed -i -e 's~ssl_key = </etc/dovecot/private/dovecot\.pem~ssl_key = </etc/postfix/ssl/'$(hostname)'-key\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
+		sed -i -e 's~ssl_cert = </etc/dovecot/dovecot\.pem~ssl_cert = </etc/postfix/ssl/'$HOSTNAME'-combined\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
+		sed -i -e 's~ssl_key = </etc/dovecot/private/dovecot\.pem~ssl_key = </etc/postfix/ssl/'$HOSTNAME'-key\.pem~g' /etc/dovecot/conf.d/10-ssl.conf
 
 		notify 'inf' "SSL configured with 'self-signed' certificates"
 	fi
@@ -702,6 +788,15 @@ function _setup_docker_permit() {
 			echo $container_ip/32 >> /etc/opendkim/TrustedHosts
 			;;
 	esac
+}
+
+function _setup_postfix_virtual_transport() {
+	notify 'task' 'Setting up Postfix virtual transport'
+
+	[ -z "${POSTFIX_DAGENT}" ] && \
+		echo "${POSTFIX_DAGENT} not set." && \
+		return 1
+	postconf -e "virtual_transport = ${POSTFIX_DAGENT}"
 }
 
 function _setup_postfix_override_configuration() {
@@ -833,7 +928,7 @@ function fix() {
 }
 
 function _fix_var_mail_permissions() {
-	notify 'task' 'Fixing /var/mail permissions'
+	notify 'task' 'Checking /var/mail permissions'
 
 	# Fix permissions, but skip this if 3 levels deep the user id is already set
 	if [ `find /var/mail -maxdepth 3 -a \( \! -user 5000 -o \! -group 5000 \) | grep -c .` != 0 ]; then
@@ -844,6 +939,26 @@ function _fix_var_mail_permissions() {
 		return 0
 	fi
 }
+
+function _fix_var_amavis_permissions() {
+	if [ "$ONE_DIR" -eq 0 ]; then
+		amavis_state_dir=/var/lib/amavis
+	else
+		amavis_state_dir=/var/mail-state/lib-amavis
+	fi
+	notify 'task' 'Checking $amavis_state_dir permissions'
+
+	amavis_permissions_status=$(find -H $amavis_state_dir -maxdepth 3 -a \( \! -user amavis -o \! -group amavis \))
+
+	if [ -n "$amavis_permissions_status" ]; then
+		notify 'inf' "Fixing $amavis_state_dir permissions"
+		chown -hR amavis:amavis $amavis_state_dir
+	else
+		notify 'inf' "Permissions in $amavis_state_dir look OK"
+		return 0
+	fi
+}
+
 ##########################################################################
 # << Fix Stack
 ##########################################################################
@@ -864,12 +979,11 @@ function misc() {
 }
 
 function _misc_save_states() {
-	# Consolidate all state that should be persisted across container restarts into one mounted
-	# directory
+	# consolidate all states into a single directory (`/var/mail-state`) to allow persistence using docker volumes
 	statedir=/var/mail-state
 	if [ "$ONE_DIR" = 1 -a -d $statedir ]; then
 		notify 'inf' "Consolidating all state onto $statedir"
-		for d in /var/spool/postfix /var/lib/postfix /var/lib/amavis /var/lib/clamav /var/lib/spamassasin /var/lib/fail2ban; do
+		for d in /var/spool/postfix /var/lib/postfix /var/lib/amavis /var/lib/clamav /var/lib/spamassasin /var/lib/fail2ban /var/lib/postgrey; do
 			dest=$statedir/`echo $d | sed -e 's/.var.//; s/\//-/g'`
 			if [ -d $dest ]; then
 				notify 'inf' "  Destination $dest exists, linking $d to it"
@@ -903,12 +1017,12 @@ function start_daemons() {
 
 function _start_daemons_cron() {
 	notify 'task' 'Starting cron' 'n'
-	display_startup_daemon "cron"	
+	display_startup_daemon "cron"
 }
 
 function _start_daemons_rsyslog() {
 	notify 'task' 'Starting rsyslog' 'n'
-	display_startup_daemon "/etc/init.d/rsyslog start"	
+	display_startup_daemon "/etc/init.d/rsyslog start"
 }
 
 function _start_daemons_saslauthd() {
@@ -920,9 +1034,9 @@ function _start_daemons_fail2ban() {
 	notify 'task' 'Starting fail2ban' 'n'
 	touch /var/log/auth.log
 	# Delete fail2ban.sock that probably was left here after container restart
-  	if [ -e /var/run/fail2ban/fail2ban.sock ]; then
-    	  rm /var/run/fail2ban/fail2ban.sock
-  	fi
+	if [ -e /var/run/fail2ban/fail2ban.sock ]; then
+		rm /var/run/fail2ban/fail2ban.sock
+	fi
 	display_startup_daemon "/etc/init.d/fail2ban start"
 }
 
@@ -957,7 +1071,7 @@ function _start_daemons_dovecot() {
 		/usr/sbin/dovecot reload
 	fi
 
-	# @TODO fix: on integration test 
+	# @TODO fix: on integration test
 	# doveadm: Error: userdb lookup: connect(/var/run/dovecot/auth-userdb) failed: No such file or directory
 	# doveadm: Fatal: user listing failed
 
@@ -983,20 +1097,17 @@ function _start_daemons_clamav() {
 	display_startup_daemon "/etc/init.d/clamav-daemon start"
 }
 
+function _start_daemons_postgrey() {
+	notify 'task' 'Starting postgrey' 'n'
+	display_startup_daemon "/etc/init.d/postgrey start"
+}
+
+
 function _start_daemons_amavis() {
 	notify 'task' 'Starting amavis' 'n'
 	display_startup_daemon "/etc/init.d/amavis start"
-
-	# @TODO fix: on integration test of mail_with_ldap amavis fails because of:
-	# Starting amavisd:   The value of variable $myhostname is "ldap", but should have been
-	# a fully qualified domain name; perhaps uname(3) did not provide such.
-	# You must explicitly assign a FQDN of this host to variable $myhostname
-	# in /etc/amavis/conf.d/05-node_id, or fix what uname(3) provides as a host's 
-	# network name!
-
-	# > temporary workaround to pass integration test
-	return 0
 }
+
 ##########################################################################
 # << Start Daemons
 ##########################################################################
@@ -1031,7 +1142,7 @@ notify 'taskgrp' ""
 
 register_functions
 
-check 
+check
 setup
 fix
 misc
@@ -1039,7 +1150,7 @@ start_daemons
 
 notify 'taskgrp' ""
 notify 'taskgrp' "#"
-notify 'taskgrp' "# $(hostname) is up and running"
+notify 'taskgrp' "# $HOSTNAME is up and running"
 notify 'taskgrp' "#"
 notify 'taskgrp' ""
 
