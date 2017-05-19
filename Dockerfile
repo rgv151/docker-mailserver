@@ -1,13 +1,21 @@
-FROM ubuntu:14.04
+FROM ubuntu:16.04
 MAINTAINER Thomas VIAL
 
+ENV DEBIAN_FRONTEND noninteractive
+ENV VIRUSMAILS_DELETE_DELAY=7
+ENV ONE_DIR=0
+
 # Packages
-RUN DEBIAN_FRONTEND=noninteractive apt-get update -q --fix-missing && \
+RUN apt-get update -q --fix-missing && \
+  apt-get -y upgrade && \
+  apt-get -y install postfix
+RUN apt-get update -q --fix-missing && \
   apt-get -y upgrade && \
   apt-get -y install --no-install-recommends \
     amavisd-new \
     arj \
     bzip2 \
+    ca-certificates \
     clamav \
     clamav-daemon \
     curl \
@@ -26,19 +34,17 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update -q --fix-missing && \
     git \
     gzip \
     iptables \
+    locales \
     libmail-spf-perl \
     libnet-dns-perl \
     libsasl2-modules \
+    netcat-openbsd \
     opendkim \
     opendkim-tools \
     opendmarc \
     p7zip \
-    postfix \
     postfix-ldap \
-    postgrey \
-    python-m2crypto \
-    python-markdown \
-    python-requests \
+    postfix-policyd-spf-python \
     pyzor \
     razor \
     rsyslog \
@@ -47,8 +53,6 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update -q --fix-missing && \
     postgrey \
     unzip \
     && \
-  curl -sk http://neuro.debian.net/lists/trusty.de-m.libre > /etc/apt/sources.list.d/neurodebian.sources.list && \
-  apt-key adv --recv-keys --keyserver hkp://pgp.mit.edu:80 0xA5D32F012649A5A9 && \
   curl https://packages.elasticsearch.org/GPG-KEY-elasticsearch | apt-key add - && \
   echo "deb http://packages.elastic.co/beats/apt stable main" | tee -a /etc/apt/sources.list.d/beats.list && \
   apt-get update -q --fix-missing && apt-get -y upgrade fail2ban filebeat && \
@@ -66,8 +70,12 @@ RUN sed -i -e 's/#mail_plugins = \$mail_plugins/mail_plugins = \$mail_plugins si
 RUN sed -i -e 's/^.*lda_mailbox_autocreate.*/lda_mailbox_autocreate = yes/g' /etc/dovecot/conf.d/15-lda.conf
 RUN sed -i -e 's/^.*lda_mailbox_autosubscribe.*/lda_mailbox_autosubscribe = yes/g' /etc/dovecot/conf.d/15-lda.conf
 RUN sed -i -e 's/^.*postmaster_address.*/postmaster_address = '${POSTMASTER_ADDRESS:="postmaster@domain.com"}'/g' /etc/dovecot/conf.d/15-lda.conf
+RUN sed -i 's/#imap_idle_notify_interval = 2 mins/imap_idle_notify_interval = 29 mins/' /etc/dovecot/conf.d/20-imap.conf
 COPY target/dovecot/auth-passwdfile.inc /etc/dovecot/conf.d/
 COPY target/dovecot/??-*.conf /etc/dovecot/conf.d/
+RUN cd /usr/share/dovecot && ./mkcert.sh
+RUN mkdir /usr/lib/dovecot/sieve-pipe && chmod 755 /usr/lib/dovecot/sieve-pipe
+RUN mkdir /usr/lib/dovecot/sieve-filter && chmod 755 /usr/lib/dovecot/sieve-filter
 
 # Configures LDAP
 COPY target/dovecot/dovecot-ldap.conf.ext /etc/dovecot
@@ -76,7 +84,7 @@ COPY target/postfix/ldap-users.cf target/postfix/ldap-groups.cf target/postfix/l
 # Enables Spamassassin CRON updates
 RUN sed -i -r 's/^(CRON)=0/\1=1/g' /etc/default/spamassassin
 
-#Enables Postgrey
+# Enables Postgrey
 COPY target/postgrey/postgrey /etc/default/postgrey
 COPY target/postgrey/postgrey.init /etc/init.d/postgrey
 RUN chmod 755 /etc/init.d/postgrey
@@ -85,6 +93,7 @@ RUN chown postgrey:postgrey /var/run/postgrey
 
 # Enables Amavis
 RUN sed -i -r 's/#(@|   \\%)bypass/\1bypass/g' /etc/amavis/conf.d/15-content_filter_mode
+COPY target/amavis/conf.d/60-dms_default_config /etc/amavis/conf.d/
 RUN adduser clamav amavis && adduser amavis clamav
 RUN useradd -u 5000 -d /home/docker -s /bin/bash -p $(echo docker | openssl passwd -1 -stdin) docker
 RUN (echo "0 4 * * * /usr/local/bin/virus-wiper" ; crontab -l) | crontab -
@@ -161,5 +170,3 @@ CMD /usr/local/bin/start-mailserver.sh
 
 
 ADD target/filebeat.yml.tmpl /etc/filebeat/filebeat.yml.tmpl
-
-

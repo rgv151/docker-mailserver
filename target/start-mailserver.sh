@@ -20,7 +20,6 @@ DEFAULT_VARS["POSTGREY_MAX_AGE"]="${POSTGREY_MAX_AGE:="35"}"
 DEFAULT_VARS["POSTGREY_TEXT"]="${POSTGREY_TEXT:="Delayed by postgrey"}"
 DEFAULT_VARS["ENABLE_SASLAUTHD"]="${ENABLE_SASLAUTHD:="0"}"
 DEFAULT_VARS["SMTP_ONLY"]="${SMTP_ONLY:="0"}"
-DEFAULT_VARS["VIRUSMAILS_DELETE_DELAY"]="${VIRUSMAILS_DELETE_DELAY:="7"}"
 DEFAULT_VARS["DMS_DEBUG"]="${DMS_DEBUG:="0"}"
 DEFAULT_VARS["OVERRIDE_HOSTNAME"]="${OVERRIDE_HOSTNAME}"
 ##########################################################################
@@ -91,7 +90,6 @@ function register_functions() {
 
 	if [ "$ENABLE_SASLAUTHD" = 1 ];then
 		_register_setup_function "_setup_saslauthd"
-		_register_setup_function "_setup_postfix_sasl"
 	fi
 
 	if [ "$ENABLE_POSTGREY" = 1 ];then
@@ -108,6 +106,7 @@ function register_functions() {
 	_register_setup_function "_setup_postfix_hostname"
 	_register_setup_function "_setup_dovecot_hostname"
 
+	_register_setup_function "_setup_postfix_sasl"
 	_register_setup_function "_setup_postfix_override_configuration"
 	_register_setup_function "_setup_postfix_sasl_password"
 	_register_setup_function "_setup_security_stack"
@@ -121,6 +120,8 @@ function register_functions() {
 	if [ "$ENABLE_POSTFIX_VIRTUAL_TRANSPORT" = 1  ]; then
 		_register_setup_function "_setup_postfix_virtual_transport"
 	fi
+
+    _register_setup_function "_setup_environment"
 
 	################### << setup funcs
 
@@ -315,6 +316,50 @@ function display_startup_daemon() {
 	return $res
 }
 
+function override_config() {
+    notify "task" "Starting do do overrides"
+
+    declare -A config_overrides
+
+    _env_variable_prefix=$1
+    [ -z ${_env_variable_prefix} ] && return 1
+
+    
+    IFS=" " read -r -a _config_files <<< $2
+
+    # dispatch env variables
+    for env_variable in $(printenv | grep $_env_variable_prefix);do
+	# get key
+	# IFS not working because values like ldap_query_filter or search base consists of several '='
+	# IFS="=" read -r -a __values <<< $env_variable
+	# key="${__values[0]}"
+	# value="${__values[1]}"
+	key=$(echo $env_variable | cut -d "=" -f1)
+	key=${key#"${_env_variable_prefix}"}
+	# make key lowercase
+	key=${key,,}
+	# get value
+	value=$(echo $env_variable | cut -d "=" -f2-)
+
+	config_overrides[$key]=$value
+    done
+
+    for f in "${_config_files[@]}"
+    do
+	if [ ! -f "${f}" ];then
+	    echo "Can not find ${f}. Skipping override" 
+	else
+	    for key in ${!config_overrides[@]} 
+	    do
+		[ -z $key ] && echo -e "\t no key provided" && return 1
+		
+		sed -i -e "s|^${key}[[:space:]]\+.*|${key} = "${config_overrides[$key]}'|g' \
+		    ${f}
+	    done
+	fi
+    done
+}
+
 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 # !  CARE --> DON'T CHANGE, except you know exactly what you are doing
 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -439,6 +484,20 @@ function _setup_dovecot() {
 		notify 'inf' "Sieve management enabled"
 		mv /etc/dovecot/protocols.d/managesieved.protocol.disab /etc/dovecot/protocols.d/managesieved.protocol
 	fi
+
+	# Copy pipe and filter programs, if any
+	rm -f /usr/lib/dovecot/sieve-filter/*
+	rm -f /usr/lib/dovecot/sieve-pipe/*
+	if [ -d /tmp/docker-mailserver/sieve-filter ]; then
+		cp /tmp/docker-mailserver/sieve-filter/* /usr/lib/dovecot/sieve-filter/
+		chown docker:docker /usr/lib/dovecot/sieve-filter/*
+		chmod 550 /usr/lib/dovecot/sieve-filter/*
+	fi
+	if [ -d /tmp/docker-mailserver/sieve-pipe ]; then
+		cp /tmp/docker-mailserver/sieve-pipe/* /usr/lib/dovecot/sieve-pipe/
+		chown docker:docker /usr/lib/dovecot/sieve-pipe/*
+		chmod 550 /usr/lib/dovecot/sieve-pipe/*
+	fi
 }
 
 function _setup_dovecot_local_user() {
@@ -462,7 +521,8 @@ function _setup_dovecot_local_user() {
 
 		# Creating users
 		# 'pass' is encrypted
-		while IFS=$'|' read login pass
+		# comments and empty lines are ignored
+		grep -v "^\s*$\|^\s*\#" /tmp/docker-mailserver/postfix-accounts.cf | while IFS=$'|' read login pass
 		do
 			# Setting variables for better readability
 			user=$(echo ${login} | cut -d @ -f1)
@@ -487,7 +547,7 @@ function _setup_dovecot_local_user() {
 			# Copy user provided sieve file, if present
 			test -e /tmp/docker-mailserver/${login}.dovecot.sieve && cp /tmp/docker-mailserver/${login}.dovecot.sieve /var/mail/${domain}/${user}/.dovecot.sieve
 			echo ${domain} >> /tmp/vhost.tmp
-		done < /tmp/docker-mailserver/postfix-accounts.cf
+		done
 	else
 		notify 'warn' "'config/docker-mailserver/postfix-accounts.cf' is not provided. No mail account created."
 	fi
@@ -495,21 +555,27 @@ function _setup_dovecot_local_user() {
 
 function _setup_ldap() {
 	notify 'task' 'Setting up Ldap'
+
+	notify 'inf' 'Checking for custom configs'
+	# cp config files if in place
 	for i in 'users' 'groups' 'aliases'; do
-		sed -i -e 's|^server_host.*|server_host = '${LDAP_SERVER_HOST:="mail.domain.com"}'|g' \
-			-e 's|^search_base.*|search_base = '${LDAP_SEARCH_BASE:="ou=people,dc=domain,dc=com"}'|g' \
-			-e 's|^bind_dn.*|bind_dn = '${LDAP_BIND_DN:="cn=admin,dc=domain,dc=com"}'|g' \
-			-e 's|^bind_pw.*|bind_pw = '${LDAP_BIND_PW:="admin"}'|g' \
-			/etc/postfix/ldap-${i}.cf
+	    fpath="/tmp/docker-mailserver/ldap-${i}.cf"
+	    if [ -f $fpath ]; then
+		cp ${fpath} /etc/postfix/ldap-${i}.cf 
+	    fi
 	done
 
+	notify 'inf' 'Starting to override configs'
+	override_config "LDAP_" "/etc/postfix/ldap-users.cf /etc/postfix/ldap-groups.cf /etc/postfix/ldap-aliases.cf"
+
+	# @TODO: Environment Variables for DOVECOT ldap integration to configure for better control
 	notify 'inf' "Configuring dovecot LDAP authentification"
 	sed -i -e 's|^hosts.*|hosts = '${LDAP_SERVER_HOST:="mail.domain.com"}'|g' \
 		-e 's|^base.*|base = '${LDAP_SEARCH_BASE:="ou=people,dc=domain,dc=com"}'|g' \
 		-e 's|^dn\s*=.*|dn = '${LDAP_BIND_DN:="cn=admin,dc=domain,dc=com"}'|g' \
 		-e 's|^dnpass\s*=.*|dnpass = '${LDAP_BIND_PW:="admin"}'|g' \
 		/etc/dovecot/dovecot-ldap.conf.ext
-
+					  
 	# Add  domainname to vhost.
 	echo $DOMAINNAME >> /tmp/vhost.tmp
 
@@ -532,21 +598,34 @@ function _setup_ldap() {
 function _setup_postgrey() {
 	notify 'inf' "Configuring postgrey"
 	sed -i -e 's/bl.spamcop.net$/bl.spamcop.net, check_policy_service inet:127.0.0.1:10023/' /etc/postfix/main.cf
-	sed -i -e "s/\"--inet=10023\"/\"--inet=10023 --delay=$POSTGREY_DELAY --max-age=$POSTGREY_MAX_AGE\"/" /etc/default/postgrey
+	sed -i -e "s/\"--inet=127.0.0.1:10023\"/\"--inet=127.0.0.1:10023 --delay=$POSTGREY_DELAY --max-age=$POSTGREY_MAX_AGE\"/" /etc/default/postgrey
 	TEXT_FOUND=`grep -i "POSTGREY_TEXT" /etc/default/postgrey | wc -l`
 
 	if [ $TEXT_FOUND -eq 0 ]; then
 		printf "POSTGREY_TEXT=\"$POSTGREY_TEXT\"\n\n" >> /etc/default/postgrey
 	fi
+	if [ -f /tmp/docker-mailserver/whitelist_clients.local ]; then
+		cp -f /tmp/docker-mailserver/whitelist_clients.local /etc/postgrey/whitelist_clients.local
+	fi
 }
 
 
 function _setup_postfix_sasl() {
+    if [[ ${ENABLE_SASLAUTHD} == 1 ]];then
 	[ ! -f /etc/postfix/sasl/smtpd.conf ] && cat > /etc/postfix/sasl/smtpd.conf << EOF
 pwcheck_method: saslauthd
 mech_list: plain login
 EOF
-	return 0
+    fi
+
+    # cyrus sasl or dovecot sasl
+    if [[ ${ENABLE_SASLAUTHD} == 1 ]] || [[ ${SMTP_ONLY} == 0 ]];then
+	sed -i -e 's|^smtpd_sasl_auth_enable[[:space:]]\+.*|smtpd_sasl_auth_enable = yes|g' /etc/postfix/main.cf
+    else 
+	sed -i -e 's|^smtpd_sasl_auth_enable[[:space:]]\+.*|smtpd_sasl_auth_enable = no|g' /etc/postfix/main.cf
+    fi
+
+    return 0
 }
 
 function _setup_saslauthd() {
@@ -804,7 +883,11 @@ function _setup_postfix_override_configuration() {
 
 	if [ -f /tmp/docker-mailserver/postfix-main.cf ]; then
 		while read line; do
+		# all valid postfix options start with a lower case letter
+		# http://www.postfix.org/postconf.5.html
+		if [[ "$line" =~ ^[a-z] ]]; then
 			postconf -e "$line"
+		fi
 		done < /tmp/docker-mailserver/postfix-main.cf
 		notify 'inf' "Loaded 'config/postfix-main.cf'"
 	else
@@ -853,7 +936,7 @@ function _setup_security_stack() {
 	notify 'task' "Setting up Security Stack"
 
 	# recreate auto-generated file
-	dms_amavis_file="/etc/amavis/conf.d/51-dms_auto_generated"
+	dms_amavis_file="/etc/amavis/conf.d/61-dms_auto_generated"
   echo "# WARNING: this file is auto-generated." > $dms_amavis_file
 	echo "use strict;" >> $dms_amavis_file
 
@@ -909,6 +992,20 @@ function _setup_elk_forwarder() {
 		| sed "s@\$ELK_PORT@$ELK_PORT@g" \
 		> /etc/filebeat/filebeat.yml
 }
+
+function _setup_environment() {
+    notify 'task' 'Setting up /etc/environment'
+
+    local banner="# docker environment"
+    local var
+    if ! grep -q "$banner" /etc/environment; then
+        echo $banner >> /etc/environment
+        for var in "VIRUSMAILS_DELETE_DELAY"; do
+            echo "$var=${!var}" >> /etc/environment
+        done
+    fi
+}
+
 ##########################################################################
 # << Setup Stack
 ##########################################################################
@@ -941,7 +1038,7 @@ function _fix_var_mail_permissions() {
 }
 
 function _fix_var_amavis_permissions() {
-	if [ "$ONE_DIR" -eq 0 ]; then
+	if [[ "$ONE_DIR" -eq 0 ]]; then
 		amavis_state_dir=/var/lib/amavis
 	else
 		amavis_state_dir=/var/mail-state/lib-amavis
