@@ -45,6 +45,7 @@ RUN apt-get update -q --fix-missing && \
     p7zip \
     postfix-ldap \
     postfix-policyd-spf-python \
+    postfix-texthash \
     pyzor \
     razor \
     rsyslog \
