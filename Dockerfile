@@ -45,7 +45,6 @@ RUN apt-get update -q --fix-missing && \
     p7zip \
     postfix-ldap \
     postfix-policyd-spf-python \
-    postfix-texthash \
     pyzor \
     razor \
     rsyslog \
@@ -53,6 +52,7 @@ RUN apt-get update -q --fix-missing && \
     spamassassin \
     postgrey \
     unzip \
+    logwatch \
     && \
   curl https://packages.elasticsearch.org/GPG-KEY-elasticsearch | apt-key add - && \
   echo "deb http://packages.elastic.co/beats/apt stable main" | tee -a /etc/apt/sources.list.d/beats.list && \
