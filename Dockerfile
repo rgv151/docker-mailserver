@@ -162,7 +162,7 @@ COPY target/postgrey/postgrey /etc/default/postgrey
 
 COPY ./target/bin /usr/local/bin
 # Start-mailserver script
-COPY ./target/start-mailserver.sh /usr/local/bin/
+COPY ./target/start-mailserver.sh ./target/docker-configomat/configomat.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/*
 
 EXPOSE 25 587 143 993 110 995 4190
