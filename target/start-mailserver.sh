@@ -7,13 +7,11 @@
 # Example: DEFAULT_VARS["KEY"]="VALUE"
 ##########################################################################
 declare -A DEFAULT_VARS
-DEFAULT_VARS["ENABLE_CLAMAV"]="${ENABLE_CLAMAV:="0"}"
 DEFAULT_VARS["ENABLE_SPAMASSASSIN"]="${ENABLE_SPAMASSASSIN:="0"}"
 DEFAULT_VARS["ENABLE_POP3"]="${ENABLE_POP3:="0"}"
 DEFAULT_VARS["ENABLE_FAIL2BAN"]="${ENABLE_FAIL2BAN:="0"}"
 DEFAULT_VARS["ENABLE_MANAGESIEVE"]="${ENABLE_MANAGESIEVE:="0"}"
 DEFAULT_VARS["ENABLE_FETCHMAIL"]="${ENABLE_FETCHMAIL:="0"}"
-DEFAULT_VARS["ENABLE_LDAP"]="${ENABLE_LDAP:="0"}"
 DEFAULT_VARS["ENABLE_POSTGREY"]="${ENABLE_POSTGREY:="0"}"
 DEFAULT_VARS["POSTGREY_DELAY"]="${POSTGREY_DELAY:="300"}"
 DEFAULT_VARS["POSTGREY_MAX_AGE"]="${POSTGREY_MAX_AGE:="35"}"
@@ -174,11 +172,6 @@ function register_functions() {
 	if [ "$ENABLE_FETCHMAIL" = 1 ]; then
 		_register_start_daemon "_start_daemons_fetchmail"
 	fi
-
-	if [ "$ENABLE_CLAMAV" = 1 ]; then
-		_register_start_daemon "_start_daemons_clamav"
-	fi
-
 
 	_register_start_daemon "_start_daemons_amavis"
 	################### << daemon funcs
@@ -946,14 +939,6 @@ function _setup_security_stack() {
 		test -e /tmp/docker-mailserver/spamassassin-rules.cf && cp /tmp/docker-mailserver/spamassassin-rules.cf /etc/spamassassin/
 	fi
 
-	# Clamav
-	if [ "$ENABLE_CLAMAV" = 0 ]; then
-		notify 'warn' "Clamav is disabled. You can enable it with 'ENABLE_CLAMAV=1'"
-		echo "@bypass_virus_checks_maps = (1);" >> $dms_amavis_file
-	elif [ "$ENABLE_CLAMAV" = 1 ]; then
-		notify 'inf' "Enabling clamav"
-	fi
-
 	echo "1;  # ensure a defined return" >> $dms_amavis_file
 
 
@@ -994,9 +979,6 @@ function _setup_environment() {
     local var
     if ! grep -q "$banner" /etc/environment; then
         echo $banner >> /etc/environment
-        for var in "VIRUSMAILS_DELETE_DELAY"; do
-            echo "$var=${!var}" >> /etc/environment
-        done
     fi
 }
 
@@ -1074,7 +1056,7 @@ function _misc_save_states() {
 	statedir=/var/mail-state
 	if [ "$ONE_DIR" = 1 -a -d $statedir ]; then
 		notify 'inf' "Consolidating all state onto $statedir"
-		for d in /var/spool/postfix /var/lib/postfix /var/lib/amavis /var/lib/clamav /var/lib/spamassasin /var/lib/fail2ban /var/lib/postgrey; do
+		for d in /var/spool/postfix /var/lib/postfix /var/lib/amavis /var/lib/spamassasin /var/lib/fail2ban /var/lib/postgrey; do
 			dest=$statedir/`echo $d | sed -e 's/.var.//; s/\//-/g'`
 			if [ -d $dest ]; then
 				notify 'inf' "  Destination $dest exists, linking $d to it"
@@ -1092,7 +1074,6 @@ function _misc_save_states() {
 		done
 
 		notify 'inf' 'Fixing /var/mail-state/* permissions'
-		chown -R clamav /var/mail-state/lib-clamav
 		chown -R postfix /var/mail-state/lib-postfix
 		chown -R postgrey /var/mail-state/lib-postgrey
 		chown -R debian-spamd /var/mail-state/lib-spamassasin
@@ -1179,20 +1160,10 @@ function _start_daemons_dovecot() {
 	#fi
 }
 
-function _start_daemons_filebeat() {
-	notify 'task' 'Starting filebeat' 'n'
-	display_startup_daemon "/etc/init.d/filebeat start"
-}
-
 function _start_daemons_fetchmail() {
 	notify 'task' 'Starting fetchmail' 'n'
 	/usr/local/bin/setup-fetchmail
 	display_startup_daemon "/etc/init.d/fetchmail start"
-}
-
-function _start_daemons_clamav() {
-	notify 'task' 'Starting clamav' 'n'
-	display_startup_daemon "/etc/init.d/clamav-daemon start"
 }
 
 function _start_daemons_postgrey() {

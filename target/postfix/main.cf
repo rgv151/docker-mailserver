@@ -77,5 +77,4 @@ non_smtpd_milters = $dkim_milter
 # SPF policy settings
 policyd-spf_time_limit = 3600
 
-
 disable_vrfy_command = yes

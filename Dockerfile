@@ -2,7 +2,6 @@ FROM ubuntu:16.04
 MAINTAINER Thomas VIAL
 
 ENV DEBIAN_FRONTEND noninteractive
-ENV VIRUSMAILS_DELETE_DELAY=7
 ENV ONE_DIR=0
 
 # Packages
@@ -16,12 +15,9 @@ RUN apt-get update -q --fix-missing && \
     arj \
     bzip2 \
     ca-certificates \
-    clamav \
-    clamav-daemon \
     curl \
     dovecot-core \
     dovecot-imapd \
-    dovecot-ldap \
     dovecot-lmtpd \
     dovecot-managesieved \
     dovecot-pop3d \
@@ -43,7 +39,6 @@ RUN apt-get update -q --fix-missing && \
     opendkim-tools \
     opendmarc \
     p7zip \
-    postfix-ldap \
     postfix-policyd-spf-python \
     pyzor \
     razor \
@@ -56,14 +51,10 @@ RUN apt-get update -q --fix-missing && \
     && \
   curl https://packages.elasticsearch.org/GPG-KEY-elasticsearch | apt-key add - && \
   echo "deb http://packages.elastic.co/beats/apt stable main" | tee -a /etc/apt/sources.list.d/beats.list && \
-  apt-get update -q --fix-missing && apt-get -y upgrade fail2ban filebeat && \
+  apt-get update -q --fix-missing && apt-get -y upgrade fail2ban && \
   apt-get autoclean && rm -rf /var/lib/apt/lists/* && \
   rm -rf /usr/share/locale/* && rm -rf /usr/share/man/* && rm -rf /usr/share/doc/* && \
   touch /var/log/auth.log && update-locale
-
-# Enables Clamav
-RUN (echo "0 0,6,12,18 * * * /usr/bin/freshclam --quiet" ; crontab -l) | crontab -
-RUN chmod 644 /etc/clamav/freshclam.conf && freshclam
 
 # Configures Dovecot
 RUN sed -i -e 's/include_try \/usr\/share\/dovecot\/protocols\.d/include_try \/etc\/dovecot\/protocols\.d/g' /etc/dovecot/dovecot.conf
@@ -78,10 +69,6 @@ RUN cd /usr/share/dovecot && ./mkcert.sh
 RUN mkdir /usr/lib/dovecot/sieve-pipe && chmod 755 /usr/lib/dovecot/sieve-pipe
 RUN mkdir /usr/lib/dovecot/sieve-filter && chmod 755 /usr/lib/dovecot/sieve-filter
 
-# Configures LDAP
-COPY target/dovecot/dovecot-ldap.conf.ext /etc/dovecot
-COPY target/postfix/ldap-users.cf target/postfix/ldap-groups.cf target/postfix/ldap-aliases.cf /etc/postfix/
-
 # Enables Spamassassin CRON updates
 RUN sed -i -r 's/^(CRON)=0/\1=1/g' /etc/default/spamassassin
 
@@ -95,9 +82,8 @@ RUN chown postgrey:postgrey /var/run/postgrey
 # Enables Amavis
 RUN sed -i -r 's/#(@|   \\%)bypass/\1bypass/g' /etc/amavis/conf.d/15-content_filter_mode
 COPY target/amavis/conf.d/60-dms_default_config /etc/amavis/conf.d/
-RUN adduser clamav amavis && adduser amavis clamav
+RUN adduser amavis && adduser amavis
 RUN useradd -u 5000 -d /home/docker -s /bin/bash -p $(echo docker | openssl passwd -1 -stdin) docker
-RUN (echo "0 4 * * * /usr/local/bin/virus-wiper" ; crontab -l) | crontab -
 
 # Configure Fail2ban
 COPY target/fail2ban/jail.conf /etc/fail2ban/jail.conf
@@ -131,14 +117,8 @@ RUN openssl dhparam -out /etc/postfix/dhparams.pem 2048
 # Configuring Logs
 RUN sed -i -r "/^#?compress/c\compress\ncopytruncate" /etc/logrotate.conf && \
   mkdir -p /var/log/mail && chown syslog:root /var/log/mail && \
-  touch /var/log/mail/clamav.log && chown -R clamav:root /var/log/mail/clamav.log && \
-  touch /var/log/mail/freshclam.log &&  chown -R clamav:root /var/log/mail/freshclam.log && \
   sed -i -r 's|/var/log/mail|/var/log/mail/mail|g' /etc/rsyslog.d/50-default.conf && \
   sed -i -r 's|;auth,authpriv.none|;mail.none;mail.error;auth,authpriv.none|g' /etc/rsyslog.d/50-default.conf && \
-  sed -i -r 's|LogFile /var/log/clamav/|LogFile /var/log/mail/|g' /etc/clamav/clamd.conf && \
-  sed -i -r 's|UpdateLogFile /var/log/clamav/|UpdateLogFile /var/log/mail/|g' /etc/clamav/freshclam.conf && \
-  sed -i -r 's|/var/log/clamav|/var/log/mail|g' /etc/logrotate.d/clamav-daemon && \
-  sed -i -r 's|/var/log/clamav|/var/log/mail|g' /etc/logrotate.d/clamav-freshclam && \
   sed -i -r 's|/var/log/mail|/var/log/mail/mail|g' /etc/logrotate.d/rsyslog
 
 # Get LetsEncrypt signed certificate
@@ -157,17 +137,12 @@ RUN git clone --depth=1 https://github.com/rgv151/gpg-mailgate.git /tmp/gpg-mail
 COPY target/gpg-mailgate/gpg-mailgate.conf /etc/gpg-mailgate.conf
 RUN echo 'register: "|/usr/local/bin/register-handler.py"' >> /etc/aliases && newaliases
 
-# Configure postgrey
-COPY target/postgrey/postgrey /etc/default/postgrey
-
 COPY ./target/bin /usr/local/bin
+
 # Start-mailserver script
 COPY ./target/start-mailserver.sh ./target/docker-configomat/configomat.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/*
 
-EXPOSE 25 587 143 993 110 995 4190
+EXPOSE 25 587 993 995 4190
 
 CMD /usr/local/bin/start-mailserver.sh
-
-
-ADD target/filebeat.yml.tmpl /etc/filebeat/filebeat.yml.tmpl
